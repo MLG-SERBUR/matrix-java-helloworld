@@ -48,6 +48,26 @@ public class MatrixHelloBot {
         }
 
         String since = null;
+        // Perform an initial short /sync to obtain a since token so we don't re-process
+        // historical events that happened before this process started.
+        try {
+            HttpRequest initSync = HttpRequest.newBuilder()
+                    .uri(URI.create(url + "/_matrix/client/v3/sync?timeout=0"))
+                    .header("Authorization", "Bearer " + accessToken)
+                    .GET()
+                    .build();
+            HttpResponse<String> initResp = client.send(initSync, HttpResponse.BodyHandlers.ofString());
+            if (initResp.statusCode() == 200) {
+                JsonNode initRoot = mapper.readTree(initResp.body());
+                since = initRoot.path("next_batch").asText(null);
+                System.out.println("Primed since token: " + since);
+            } else {
+                System.out.println("Initial sync returned: " + initResp.statusCode());
+            }
+        } catch (Exception e) {
+            System.out.println("Initial sync failed: " + e.getMessage());
+        }
+
         System.out.println("Starting /sync loop (listening for '!testcommand')...");
 
         while (true) {
