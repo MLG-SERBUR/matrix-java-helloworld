@@ -6,8 +6,14 @@ Prerequisites
 - Java 17+
 - Maven
 
-Environment variables
-- `MATRIX_HOMESERVER_URL` — homeserver URL (e.g. `https://matrix.org` or your server)
+ This is intentionally minimal and uses the homeserver HTTP API directly.
+ For a long-running bot that listens for events use `/sync` or a higher-level SDK.
+
+ Commands
+ - `!testcommand` — bot replies `Hello, world!` in the same room.
+ - `!export<N>h` — export the last N hours of chat from the room where the command was sent.
+	 - Example: `!export12h` will write a file like `!room_alias...-last12h-<ts>.txt` in the current working directory.
+	 - The bot will announce in the room when the export starts and when it completes.
 - `MATRIX_ACCESS_TOKEN` — access token for the bot/user
 - `MATRIX_ROOM_ID` — room id (e.g. `!abcdef:matrix.org`) or room alias (e.g. `#room:matrix.org`)
 
