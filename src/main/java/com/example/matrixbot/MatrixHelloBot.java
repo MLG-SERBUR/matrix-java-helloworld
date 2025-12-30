@@ -407,7 +407,7 @@ public class MatrixHelloBot {
                 String arliAnswer = arliResponse.path("choices").get(0).path("message").path("content").asText("No response from Arli AI.");
                 
                 // Append link to the first message if available
-                if (result.firstEventId != null && startTimestamp > 0) {
+                if (result.firstEventId != null) {
                     String messageLink = "https://matrix.to/#/" + exportRoomId + "/" + result.firstEventId;
                     arliAnswer += "\n\n" + messageLink;
                 }
