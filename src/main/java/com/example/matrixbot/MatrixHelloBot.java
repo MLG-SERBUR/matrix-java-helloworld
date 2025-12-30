@@ -12,6 +12,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.Iterator;
 import java.util.Map;
 import java.nio.file.Files;
@@ -163,30 +165,35 @@ public class MatrixHelloBot {
                                 final String finalPrevBatch = prevBatch; // Make prevBatch final for lambda
                                 final Config finalConfig = config;
                                 final String finalRoomId = roomId; // Command room for responses
-                                new Thread(() -> queryArliAIWithChatLogs(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, finalHours, finalPrevBatch, finalQuestion, finalConfig, -1)).start();
-                            } else if (trimmed.matches("!arliai-ts\\s+\\d{4}-\\d{2}-\\d{2}-\\d{2}-\\d{2}\\s+\\d+h(?:\\s+(.*))?")) {
+                                new Thread(() -> queryArliAIWithChatLogs(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, finalHours, finalPrevBatch, finalQuestion, finalConfig, -1, "PST")).start();
+                            } else if (trimmed.matches("!arliai-ts\\s+\\d{4}-\\d{2}-\\d{2}-\\d{2}-\\d{2}\\s+[A-Z]{3}\\s+\\d+h(?:\\s+(.*))?")) {
                                 if (userId != null && userId.equals(sender)) continue;
 
-                                java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("!arliai-ts\\s+(\\d{4}-\\d{2}-\\d{2}-\\d{2}-\\d{2})\\s+(\\d+)h(?:\\s+(.*))?").matcher(trimmed);
+                                java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("!arliai-ts\\s+(\\d{4}-\\d{2}-\\d{2}-\\d{2}-\\d{2})\\s+([A-Z]{3})\\s+(\\d+)h(?:\\s+(.*))?").matcher(trimmed);
                                 if (matcher.matches()) {
                                     String startDateStr = matcher.group(1);
-                                    int durationHours = Integer.parseInt(matcher.group(2));
-                                    String question = matcher.group(3) != null ? matcher.group(3).trim() : null;
+                                    String timezoneAbbr = matcher.group(2);
+                                    int durationHours = Integer.parseInt(matcher.group(3));
+                                    String question = matcher.group(4) != null ? matcher.group(4).trim() : null;
 
-                                    // Convert YYYY-MM-DD-HH-MM to Unix timestamp (milliseconds)
+                                    // Convert timezone abbreviation to ZoneId
+                                    ZoneId zoneId = getZoneIdFromAbbr(timezoneAbbr);
+                                    
+                                    // Convert YYYY-MM-DD-HH-MM to Unix timestamp (milliseconds) with timezone
                                     long startTimestamp = java.time.LocalDateTime.parse(startDateStr, java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd-HH-mm"))
-                                            .atZone(java.time.ZoneId.systemDefault())
+                                            .atZone(zoneId)
                                             .toInstant()
                                             .toEpochMilli();
 
-                                    System.out.println("Received arliai-ts command in " + roomId + " from " + sender + " (start=" + startDateStr + ", duration=" + durationHours + "h" + (question != null ? ", question: " + question : "") + ")");
+                                    System.out.println("Received arliai-ts command in " + roomId + " from " + sender + " (start=" + startDateStr + " " + timezoneAbbr + ", duration=" + durationHours + "h" + (question != null ? ", question: " + question : "") + ")");
                                     final long finalStartTimestamp = startTimestamp;
                                     final int finalDurationHours = durationHours;
                                     final String finalQuestion = question;
                                     final String finalPrevBatch = prevBatch;
                                     final Config finalConfig = config;
                                     final String finalRoomId = roomId;
-                                    new Thread(() -> queryArliAIWithChatLogs(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, finalDurationHours, finalPrevBatch, finalQuestion, finalConfig, finalStartTimestamp)).start();
+                                    final String finalTimezoneAbbr = timezoneAbbr;
+                                    new Thread(() -> queryArliAIWithChatLogs(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, finalDurationHours, finalPrevBatch, finalQuestion, finalConfig, finalStartTimestamp, finalTimezoneAbbr)).start();
                                 }
                             }
                         }
@@ -330,20 +337,21 @@ public class MatrixHelloBot {
         }
     }
 
-    private static void queryArliAIWithChatLogs(HttpClient client, ObjectMapper mapper, String url, String accessToken, String responseRoomId, String exportRoomId, int hours, String fromToken, String question, Config config, long startTimestamp) {
+    private static void queryArliAIWithChatLogs(HttpClient client, ObjectMapper mapper, String url, String accessToken, String responseRoomId, String exportRoomId, int hours, String fromToken, String question, Config config, long startTimestamp, String timezoneAbbr) {
         try {
+            ZoneId zoneId = getZoneIdFromAbbr(timezoneAbbr);
             String timeInfo = "";
             if (startTimestamp > 0) {
                 String dateStr = java.time.Instant.ofEpochMilli(startTimestamp)
-                        .atZone(java.time.ZoneId.systemDefault())
-                        .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd-HH-mm"));
+                        .atZone(zoneId)
+                        .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm z"));
                 timeInfo = "starting at " + dateStr + " (next " + hours + "h)";
             } else {
                 timeInfo = "last " + (hours > 0 ? hours + "h" : "all history");
             }
             sendMarkdown(client, mapper, url, accessToken, responseRoomId, "Querying Arli AI with chat logs from " + exportRoomId + " (" + timeInfo + (question != null ? " and question: " + question : "") + ")...");
 
-            java.util.List<String> chatLogs = fetchRoomHistory(client, mapper, url, accessToken, exportRoomId, hours, fromToken, startTimestamp);
+            java.util.List<String> chatLogs = fetchRoomHistory(client, mapper, url, accessToken, exportRoomId, hours, fromToken, startTimestamp, zoneId);
             if (chatLogs.isEmpty()) {
                 sendMarkdown(client, mapper, url, accessToken, responseRoomId, "No chat logs found for " + timeInfo + " in " + exportRoomId + ".");
                 return;
@@ -400,10 +408,10 @@ public class MatrixHelloBot {
     }
 
     private static java.util.List<String> fetchRoomHistory(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, int hours, String fromToken) {
-        return fetchRoomHistory(client, mapper, url, accessToken, roomId, hours, fromToken, -1);
+        return fetchRoomHistory(client, mapper, url, accessToken, roomId, hours, fromToken, -1, ZoneId.of("America/Los_Angeles"));
     }
 
-    private static java.util.List<String> fetchRoomHistory(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, int hours, String fromToken, long startTimestamp) {
+    private static java.util.List<String> fetchRoomHistory(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, int hours, String fromToken, long startTimestamp, ZoneId zoneId) {
         java.util.List<String> lines = new java.util.ArrayList<>();
         
         // Calculate the time range
@@ -470,7 +478,11 @@ public class MatrixHelloBot {
                     String body = ev.path("content").path("body").asText(null);
                     String sender = ev.path("sender").asText(null);
                     if (body != null && sender != null) {
-                        lines.add("[" + Instant.ofEpochMilli(originServerTs) + "] <" + sender + "> " + body);
+                        // Format timestamp with timezone
+                        String timestamp = java.time.Instant.ofEpochMilli(originServerTs)
+                                .atZone(zoneId)
+                                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm z"));
+                        lines.add("[" + timestamp + "] <" + sender + "> " + body);
                     }
                 }
                 
@@ -489,5 +501,22 @@ public class MatrixHelloBot {
         }
         java.util.Collections.reverse(lines);
         return lines;
+    }
+
+    private static ZoneId getZoneIdFromAbbr(String timezoneAbbr) {
+        // Map timezone abbreviations to ZoneId
+        switch (timezoneAbbr.toUpperCase()) {
+            case "PST": return ZoneId.of("America/Los_Angeles");
+            case "PDT": return ZoneId.of("America/Los_Angeles");
+            case "MST": return ZoneId.of("America/Denver");
+            case "MDT": return ZoneId.of("America/Denver");
+            case "CST": return ZoneId.of("America/Chicago");
+            case "CDT": return ZoneId.of("America/Chicago");
+            case "EST": return ZoneId.of("America/New_York");
+            case "EDT": return ZoneId.of("America/New_York");
+            case "UTC": return ZoneId.of("UTC");
+            case "GMT": return ZoneId.of("GMT");
+            default: return ZoneId.of("America/Los_Angeles");
+        }
     }
 }
