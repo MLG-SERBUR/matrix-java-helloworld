@@ -113,14 +113,29 @@ public class MatrixHelloBot {
                                 int hours = Integer.parseInt(trimmed.replaceAll("\\D+", ""));
                                 System.out.println("Received export command in " + roomId + " from " + sender + " (" + hours + "h)");
                                 // run export in a new thread so we don't block the sync loop
-                                final String fb = prevBatch;
-                                new Thread(() -> exportRoomHistory(client, mapper, url, accessToken, roomId, hours, fb)).start();
-                            } else if (trimmed.matches("!ollama(\\d+)h")) {
+                                final String finalPrevBatch = prevBatch;
+                                new Thread(() -> exportRoomHistory(client, mapper, url, accessToken, roomId, hours, finalPrevBatch)).start();
+                            } else if (trimmed.matches("!arliai(?:\\s+(\\d+)h)?(?:\\s+(.*))?")) {
                                 if (userId != null && userId.equals(sender)) continue;
-                                int hours = Integer.parseInt(trimmed.replaceAll("[^0-9]", ""));
-                                System.out.println("Received ollama chat logs command in " + roomId + " from " + sender + " (" + hours + "h)");
-                                final String fb = prevBatch;
-                                new Thread(() -> queryOllamaWithChatLogs(client, mapper, url, accessToken, roomId, hours, fb)).start();
+
+                                int hours = 12; // Default to 12 hours
+                                String question = null;
+
+                                java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("!arliai(?:\\s+(\\d+)h)?(?:\\s+(.*))?").matcher(trimmed);
+                                if (matcher.matches()) {
+                                    if (matcher.group(1) != null) {
+                                        hours = Integer.parseInt(matcher.group(1));
+                                    }
+                                    if (matcher.group(2) != null) {
+                                        question = matcher.group(2).trim();
+                                    }
+                                }
+
+                                System.out.println("Received arliai command in " + roomId + " from " + sender + " (" + (hours > 0 ? hours + "h" : "all history") + ")" + (question != null ? ", question: " + question : ""));
+                                final int finalHours = hours;
+                                final String finalQuestion = question;
+                                final String finalPrevBatch = prevBatch; // Make prevBatch final for lambda
+                                new Thread(() -> queryArliAIWithChatLogs(client, mapper, url, accessToken, roomId, finalHours, finalPrevBatch, finalQuestion)).start();
                             }
                         }
                     }
@@ -140,7 +155,10 @@ public class MatrixHelloBot {
             String txnId = "m" + Instant.now().toEpochMilli();
             String encodedRoom = URLEncoder.encode(roomId, StandardCharsets.UTF_8);
             String endpoint = url + "/_matrix/client/v3/rooms/" + encodedRoom + "/send/m.room.message/" + txnId;
-            Map<String, String> payload = Map.of("msgtype", "m.text", "body", message);
+            Map<String, Object> payload = new java.util.HashMap<>();
+            payload.put("msgtype", "m.text");
+            payload.put("body", message);
+            payload.put("m.mentions", Map.of()); // Add empty mentions object to prevent accidental mentions
             String json = mapper.writeValueAsString(payload);
 
             HttpRequest request = HttpRequest.newBuilder()
@@ -157,133 +175,182 @@ public class MatrixHelloBot {
         }
     }
 
+    private static void sendMarkdown(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, String message) {
+        try {
+            String txnId = "m" + Instant.now().toEpochMilli();
+            String encodedRoom = URLEncoder.encode(roomId, StandardCharsets.UTF_8);
+            String endpoint = url + "/_matrix/client/v3/rooms/" + encodedRoom + "/send/m.room.message/" + txnId;
+            
+            // Convert markdown to HTML for Matrix
+            String htmlBody = convertMarkdownToHtml(message);
+            
+            Map<String, Object> payload = new java.util.HashMap<>();
+            payload.put("msgtype", "m.text");
+            payload.put("body", message); // Plain text fallback
+            payload.put("format", "org.matrix.custom.html");
+            payload.put("formatted_body", htmlBody); // HTML with markdown formatting
+            payload.put("m.mentions", Map.of()); // Add empty mentions object to prevent accidental mentions
+            String json = mapper.writeValueAsString(payload);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(endpoint))
+                    .header("Authorization", "Bearer " + accessToken)
+                    .header("Content-Type", "application/json")
+                    .PUT(HttpRequest.BodyPublishers.ofString(json))
+                    .build();
+
+            HttpResponse<String> resp = client.send(request, HttpResponse.BodyHandlers.ofString());
+            System.out.println("Sent markdown reply to " + roomId + " -> " + resp.statusCode());
+        } catch (Exception e) {
+            System.out.println("Failed to send markdown message: " + e.getMessage());
+        }
+    }
+
+    private static String convertMarkdownToHtml(String markdown) {
+        // Simple markdown to HTML conversion
+        String html = markdown;
+        
+        // Convert headers (# Header) - handle them line by line
+        String[] lines = html.split("\n");
+        StringBuilder result = new StringBuilder();
+        
+        for (String line : lines) {
+            if (line.matches("^#\\s+.*")) {
+                result.append("<h1>").append(line.replaceFirst("^#\\s+", "")).append("</h1>");
+            } else if (line.matches("^##\\s+.*")) {
+                result.append("<h2>").append(line.replaceFirst("^##\\s+", "")).append("</h2>");
+            } else if (line.matches("^###\\s+.*")) {
+                result.append("<h3>").append(line.replaceFirst("^###\\s+", "")).append("</h3>");
+            } else if (line.matches("^####\\s+.*")) {
+                result.append("<h4>").append(line.replaceFirst("^####\\s+", "")).append("</h4>");
+            } else if (line.matches("^#####\\s+.*")) {
+                result.append("<h5>").append(line.replaceFirst("^#####\\s+", "")).append("</h5>");
+            } else if (line.matches("^######\\s+.*")) {
+                result.append("<h6>").append(line.replaceFirst("^######\\s+", "")).append("</h6>");
+            } else if (line.matches("^>\\s+.*")) {
+                result.append("<blockquote>").append(line.replaceFirst("^>\\s+", "")).append("</blockquote>");
+            } else if (line.matches("^[-*]{3,}\\s*$")) {
+                result.append("<hr>");
+            } else if (line.matches("^-\\s+.*")) {
+                result.append("<li>").append(line.replaceFirst("^-\\s+", "")).append("</li>");
+            } else if (line.matches("^\\d+\\.\\s+.*")) {
+                result.append("<li>").append(line.replaceFirst("^\\d+\\.\\s+", "")).append("</li>");
+            } else {
+                result.append(line);
+            }
+            result.append("\n");
+        }
+        
+        html = result.toString();
+        
+        // Convert bold (**text**)
+        html = html.replaceAll("\\*\\*(.*?)\\*\\*", "<strong>$1</strong>");
+        
+        // Convert italic (*text*)
+        html = html.replaceAll("\\*(.*?)\\*", "<em>$1</em>");
+        
+        // Convert inline code (`code`)
+        html = html.replaceAll("`([^`]+)`", "<code>$1</code>");
+        
+        // Convert links ([text](url))
+        html = html.replaceAll("\\[([^\\]]+)\\]\\(([^)]+)\\)", "<a href=\"$2\">$1</a>");
+        
+        // Convert code blocks (```language\ncontent\n```)
+        html = html.replaceAll("```\\w*\n(.*?)\n```", "<pre><code>$1</code></pre>");
+        
+        // Wrap lists in <ul> tags
+        html = html.replaceAll("(<li>.*?</li>)+", "<ul>$0</ul>");
+        
+        // Convert newlines to <br> tags (but preserve HTML tags)
+        html = html.replaceAll("\n", "<br>");
+        
+        return html;
+    }
+
     private static void exportRoomHistory(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, int hours, String fromToken) {
         try {
             long now = System.currentTimeMillis();
-            long cutoff = now - (long) hours * 3600L * 1000L;
             String safeRoom = roomId.replaceAll("[^A-Za-z0-9._-]", "_");
             String filename = safeRoom + "-last" + hours + "h-" + now + ".txt";
 
-            sendText(client, mapper, url, accessToken, roomId, "Starting export of last " + hours + "h to " + filename);
+            sendMarkdown(client, mapper, url, accessToken, roomId, "Starting export of last " + hours + "h to " + filename);
 
-            // If we don't have a pagination token, try to get one via a short sync
-            if (fromToken == null) {
-                try {
-                    HttpRequest syncReq = HttpRequest.newBuilder()
-                            .uri(URI.create(url + "/_matrix/client/v3/sync?timeout=0"))
-                            .header("Authorization", "Bearer " + accessToken)
-                            .GET()
-                            .build();
-                    HttpResponse<String> syncResp = client.send(syncReq, HttpResponse.BodyHandlers.ofString());
-                    if (syncResp.statusCode() == 200) {
-                        JsonNode root = mapper.readTree(syncResp.body());
-                        fromToken = root.path("rooms").path("join").path(roomId).path("timeline").path("prev_batch").asText(null);
-                    }
-                } catch (Exception ignore) {
-                }
+            java.util.List<String> lines = fetchRoomHistory(client, mapper, url, accessToken, roomId, hours, fromToken);
+
+            if (lines.isEmpty()) {
+                sendMarkdown(client, mapper, url, accessToken, roomId, "No chat logs found for the last " + hours + "h to export.");
+                return;
             }
-
-            java.util.List<String> lines = new java.util.ArrayList<>();
-            String token = fromToken;
-            int totalEvents = 0;
-            int safety = 0;
-
-            while (token != null && safety < 100) {
-                safety++;
-                String messagesUrl = url + "/_matrix/client/v3/rooms/" + URLEncoder.encode(roomId, StandardCharsets.UTF_8)
-                        + "/messages?from=" + URLEncoder.encode(token, StandardCharsets.UTF_8) + "&dir=b&limit=100";
-                HttpRequest msgReq = HttpRequest.newBuilder()
-                        .uri(URI.create(messagesUrl))
-                        .header("Authorization", "Bearer " + accessToken)
-                        .GET()
-                        .build();
-                HttpResponse<String> msgResp = client.send(msgReq, HttpResponse.BodyHandlers.ofString());
-                if (msgResp.statusCode() != 200) break;
-                JsonNode root = mapper.readTree(msgResp.body());
-                JsonNode chunk = root.path("chunk");
-                if (!chunk.isArray() || chunk.size() == 0) break;
-                String next = root.path("end").asText(null);
-
-                for (JsonNode ev : chunk) {
-                    if (!"m.room.message".equals(ev.path("type").asText(null))) continue;
-                    long ts = ev.path("origin_server_ts").asLong(0);
-                    if (ts < cutoff) {
-                        // reached older than cutoff — stop collecting
-                        token = null;
-                        break;
-                    }
-                    String sender = ev.path("sender").asText("unknown");
-                    String body = ev.path("content").path("body").asText("");
-                    java.time.Instant instant = java.time.Instant.ofEpochMilli(ts);
-                    String timeStr = java.time.ZonedDateTime.ofInstant(instant, java.time.ZoneId.systemDefault()).toString();
-                    lines.add("[" + timeStr + "] <" + sender + "> " + body);
-                    totalEvents++;
-                    if (totalEvents >= 10000) { token = null; break; }
-                }
-
-                token = token == null ? null : next;
-            }
-
-            // reverse to chronological order (we paginated backwards)
-            java.util.Collections.reverse(lines);
 
             try (java.io.BufferedWriter w = new java.io.BufferedWriter(new java.io.FileWriter(filename))) {
                 for (String l : lines) w.write(l + "\n");
             }
 
-            sendText(client, mapper, url, accessToken, roomId, "Export complete: " + filename + " (" + totalEvents + " messages)");
-            System.out.println("Exported " + totalEvents + " messages to " + filename);
+            sendMarkdown(client, mapper, url, accessToken, roomId, "Export complete: " + filename + " (" + lines.size() + " messages)");
+            System.out.println("Exported " + lines.size() + " messages to " + filename);
         } catch (Exception e) {
             System.out.println("Export failed: " + e.getMessage());
-            try { sendText(client, mapper, url, accessToken, roomId, "Export failed: " + e.getMessage()); } catch (Exception ignore) {}
+            try { sendMarkdown(client, mapper, url, accessToken, roomId, "Export failed: " + e.getMessage()); } catch (Exception ignore) {}
         }
     }
 
-    private static void queryOllamaWithChatLogs(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, int hours, String fromToken) {
+    private static void queryArliAIWithChatLogs(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, int hours, String fromToken, String question) {
         try {
-            sendText(client, mapper, url, accessToken, roomId, "Querying Ollama with chat logs from last " + hours + "h...");
+            sendMarkdown(client, mapper, url, accessToken, roomId, "Querying Arli AI with chat logs from last " + (hours > 0 ? hours + "h" : "all history") + (question != null ? " and question: " + question : "") + "...");
 
             java.util.List<String> chatLogs = fetchRoomHistory(client, mapper, url, accessToken, roomId, hours, fromToken);
             if (chatLogs.isEmpty()) {
-                sendText(client, mapper, url, accessToken, roomId, "No chat logs found for the last " + hours + "h.");
+                sendMarkdown(client, mapper, url, accessToken, roomId, "No chat logs found for the last " + (hours > 0 ? hours + "h" : "all history") + ".");
                 return;
             }
 
-            String prompt = "Analyze the following chat logs and provide a summary or answer any questions based on the context:\n\n" + String.join("\n", chatLogs);
+            String prompt = "";
+            if (question != null && !question.isEmpty()) {
+                prompt = "Given the following chat logs, answer the question: '" + question + "'\\n\\n" + String.join("\\n", chatLogs);
+            } else {
+                prompt = "Summarize the following chat logs. Use only a title for each topic and only include one or more direct quotes as bullet points for each topic:\\n\\n" + String.join("\\n", chatLogs);
+            }
 
-            // Make HTTP POST request to Ollama API
-            String ollamaUrl = System.getenv("OLLAMA_API_URL"); // Expecting Ollama API URL as an environment variable
-            if (ollamaUrl == null) {
-                sendText(client, mapper, url, accessToken, roomId, "OLLAMA_API_URL environment variable is not set.");
+            // Make HTTP POST request to Arli AI API
+            String arliApiUrl = "https://api.arliai.com";
+            String arliApiKey = System.getenv("ARLI_API_KEY");
+
+            if (arliApiKey == null || arliApiKey.isEmpty()) {
+                sendMarkdown(client, mapper, url, accessToken, roomId, "ARLI_API_KEY environment variable is not set or is empty.");
                 return;
             }
 
-            Map<String, Object> ollamaPayload = Map.of(
-                "model", "phi3", // Assuming 'phi3' model is available in Ollama
-                "prompt", prompt,
+            java.util.List<Map<String, String>> messages = new java.util.ArrayList<>();
+            messages.add(Map.of("role", "system", "content", "You summarize chat logs."));
+            messages.add(Map.of("role", "user", "content", prompt));
+
+            Map<String, Object> arliPayload = Map.of(
+                "model", "Gemma-3-27B-it", // Using a suitable Arli AI model
+                "messages", messages,
                 "stream", false
             );
-            String jsonPayload = mapper.writeValueAsString(ollamaPayload);
+            String jsonPayload = mapper.writeValueAsString(arliPayload);
 
             HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(ollamaUrl + "/api/generate"))
+                    .uri(URI.create(arliApiUrl + "/v1/chat/completions"))
                     .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + arliApiKey)
                     .POST(HttpRequest.BodyPublishers.ofString(jsonPayload))
                     .build();
 
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
-                JsonNode ollamaResponse = mapper.readTree(response.body());
-                String ollamaAnswer = ollamaResponse.path("response").asText("No response from Ollama.");
-                sendText(client, mapper, url, accessToken, roomId, "Ollama's response: " + ollamaAnswer);
+                JsonNode arliResponse = mapper.readTree(response.body());
+                String arliAnswer = arliResponse.path("choices").get(0).path("message").path("content").asText("No response from Arli AI.");
+                sendMarkdown(client, mapper, url, accessToken, roomId, arliAnswer);
             } else {
-                sendText(client, mapper, url, accessToken, roomId, "Failed to get response from Ollama. Status: " + response.statusCode() + ", Body: " + response.body());
+                sendMarkdown(client, mapper, url, accessToken, roomId, "Failed to get response from Arli AI. Status: " + response.statusCode() + ", Body: " + response.body());
             }
 
         } catch (Exception e) {
-            System.out.println("Failed to query Ollama with chat logs: " + e.getMessage());
-            sendText(client, mapper, url, accessToken, roomId, "Error querying Ollama: " + e.getMessage());
+            System.out.println("Failed to query Arli AI with chat logs: " + e.getMessage());
+            sendMarkdown(client, mapper, url, accessToken, roomId, "Error querying Arli AI: " + e.getMessage());
         }
     }
 
