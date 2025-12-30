@@ -163,7 +163,31 @@ public class MatrixHelloBot {
                                 final String finalPrevBatch = prevBatch; // Make prevBatch final for lambda
                                 final Config finalConfig = config;
                                 final String finalRoomId = roomId; // Command room for responses
-                                new Thread(() -> queryArliAIWithChatLogs(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, finalHours, finalPrevBatch, finalQuestion, finalConfig)).start();
+                                new Thread(() -> queryArliAIWithChatLogs(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, finalHours, finalPrevBatch, finalQuestion, finalConfig, -1)).start();
+                            } else if (trimmed.matches("!arliai-ts\\s+\\d{4}-\\d{2}-\\d{2}-\\d{2}-\\d{2}\\s+\\d+h(?:\\s+(.*))?")) {
+                                if (userId != null && userId.equals(sender)) continue;
+
+                                java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("!arliai-ts\\s+(\\d{4}-\\d{2}-\\d{2}-\\d{2}-\\d{2})\\s+(\\d+)h(?:\\s+(.*))?").matcher(trimmed);
+                                if (matcher.matches()) {
+                                    String startDateStr = matcher.group(1);
+                                    int durationHours = Integer.parseInt(matcher.group(2));
+                                    String question = matcher.group(3) != null ? matcher.group(3).trim() : null;
+
+                                    // Convert YYYY-MM-DD-HH-MM to Unix timestamp (milliseconds)
+                                    long startTimestamp = java.time.LocalDateTime.parse(startDateStr, java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd-HH-mm"))
+                                            .atZone(java.time.ZoneId.systemDefault())
+                                            .toInstant()
+                                            .toEpochMilli();
+
+                                    System.out.println("Received arliai-ts command in " + roomId + " from " + sender + " (start=" + startDateStr + ", duration=" + durationHours + "h" + (question != null ? ", question: " + question : "") + ")");
+                                    final long finalStartTimestamp = startTimestamp;
+                                    final int finalDurationHours = durationHours;
+                                    final String finalQuestion = question;
+                                    final String finalPrevBatch = prevBatch;
+                                    final Config finalConfig = config;
+                                    final String finalRoomId = roomId;
+                                    new Thread(() -> queryArliAIWithChatLogs(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, finalDurationHours, finalPrevBatch, finalQuestion, finalConfig, finalStartTimestamp)).start();
+                                }
                             }
                         }
                     }
@@ -306,13 +330,22 @@ public class MatrixHelloBot {
         }
     }
 
-    private static void queryArliAIWithChatLogs(HttpClient client, ObjectMapper mapper, String url, String accessToken, String responseRoomId, String exportRoomId, int hours, String fromToken, String question, Config config) {
+    private static void queryArliAIWithChatLogs(HttpClient client, ObjectMapper mapper, String url, String accessToken, String responseRoomId, String exportRoomId, int hours, String fromToken, String question, Config config, long startTimestamp) {
         try {
-            sendMarkdown(client, mapper, url, accessToken, responseRoomId, "Querying Arli AI with chat logs from " + exportRoomId + " (last " + (hours > 0 ? hours + "h" : "all history") + (question != null ? " and question: " + question : "") + ")...");
+            String timeInfo = "";
+            if (startTimestamp > 0) {
+                String dateStr = java.time.Instant.ofEpochMilli(startTimestamp)
+                        .atZone(java.time.ZoneId.systemDefault())
+                        .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd-HH-mm"));
+                timeInfo = "starting at " + dateStr + " (next " + hours + "h)";
+            } else {
+                timeInfo = "last " + (hours > 0 ? hours + "h" : "all history");
+            }
+            sendMarkdown(client, mapper, url, accessToken, responseRoomId, "Querying Arli AI with chat logs from " + exportRoomId + " (" + timeInfo + (question != null ? " and question: " + question : "") + ")...");
 
-            java.util.List<String> chatLogs = fetchRoomHistory(client, mapper, url, accessToken, exportRoomId, hours, fromToken);
+            java.util.List<String> chatLogs = fetchRoomHistory(client, mapper, url, accessToken, exportRoomId, hours, fromToken, startTimestamp);
             if (chatLogs.isEmpty()) {
-                sendMarkdown(client, mapper, url, accessToken, responseRoomId, "No chat logs found for the last " + (hours > 0 ? hours + "h" : "all history") + " in " + exportRoomId + ".");
+                sendMarkdown(client, mapper, url, accessToken, responseRoomId, "No chat logs found for " + timeInfo + " in " + exportRoomId + ".");
                 return;
             }
 
@@ -320,7 +353,7 @@ public class MatrixHelloBot {
             if (question != null && !question.isEmpty()) {
                 prompt = "Given the following chat logs, answer the question: '" + question + "'\\n\\n" + String.join("\\n", chatLogs);
             } else {
-                prompt = "Give a high level overview of the following chat logs. Use only a title for each topic and only include one or more chat messages verbatim as bullet points for each topic. Then summarize with bullet points all of the chat at end:\\n\\n" + String.join("\\n", chatLogs);
+                prompt = "Give a high level overview of the following chat logs. Use only a title and timestamp for each topic and only include one or more chat messages verbatim as bullet points for each topic. Then summarize with bullet points all of the chat at end:\\n\\n" + String.join("\\n", chatLogs);
             }
 
             // Make HTTP POST request to Arli AI API
@@ -367,10 +400,16 @@ public class MatrixHelloBot {
     }
 
     private static java.util.List<String> fetchRoomHistory(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, int hours, String fromToken) {
-        java.util.List<String> lines = new java.util.ArrayList<>();
-        long now = System.currentTimeMillis();
-        long cutoff = now - (long) hours * 3600L * 1000L;
+        return fetchRoomHistory(client, mapper, url, accessToken, roomId, hours, fromToken, -1);
+    }
 
+    private static java.util.List<String> fetchRoomHistory(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, int hours, String fromToken, long startTimestamp) {
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        
+        // Calculate the time range
+        long startTime = (startTimestamp > 0) ? startTimestamp : System.currentTimeMillis();
+        long endTime = startTime + (long) hours * 3600L * 1000L;
+        
         // If we don't have a pagination token, try to get one via a short sync
         if (fromToken == null) {
             try {
@@ -414,19 +453,31 @@ public class MatrixHelloBot {
                 JsonNode chunk = root.path("chunk");
                 if (!chunk.isArray() || chunk.size() == 0) break;
 
+                boolean reachedStart = false;
                 for (JsonNode ev : chunk) {
                     if (!"m.room.message".equals(ev.path("type").asText(null))) continue;
                     long originServerTs = ev.path("origin_server_ts").asLong(0);
-                    if (originServerTs < cutoff) {
-                        token = null; // Reached messages older than cutoff
-                        break;
+                    
+                    // Stop if we've gone past our time range
+                    if (originServerTs > endTime) {
+                        continue; // Skip messages newer than our range
                     }
+                    if (originServerTs < startTime) {
+                        reachedStart = true;
+                        break; // Stop when we reach messages older than start time
+                    }
+                    
                     String body = ev.path("content").path("body").asText(null);
                     String sender = ev.path("sender").asText(null);
                     if (body != null && sender != null) {
                         lines.add("[" + Instant.ofEpochMilli(originServerTs) + "] <" + sender + "> " + body);
                     }
                 }
+                
+                if (reachedStart) {
+                    break; // We've collected all messages in our time range
+                }
+                
                 if (token != null) {
                      token = root.path("end").asText(null);
                 }

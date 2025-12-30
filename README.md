@@ -40,6 +40,9 @@ All commands must be sent in the **command room** specified in your config:
   - Example: `!export12h` will write a file like `!exportRoom-...-last12h-<ts>.txt`
 - `!arliai` or `!arliai <N>h` or `!arliai <N>h <question>` — Queries Arli AI with chat logs from the **export room** and posts the summary/answer in the **command room**
   - Example: `!arliai`, `!arliai 12h`, or `!arliai 6h What was the main topic of discussion?`
+- `!arliai-ts <YYYY-MM-DD-HH-MM> <N>h [question]` — Queries Arli AI with chat logs from the **export room** starting at a specific date and time, covering the next N hours
+  - Example: `!arliai-ts 2024-12-30-23-59 24h` — Analyzes 24 hours of chat starting at 23:59 on December 30, 2024
+  - Example: `!arliai-ts 2024-12-30-14-30 6h What was discussed?` — Analyzes 6 hours starting at 14:30 on December 30, 2024 with a specific question
 
 ## Prerequisites
 - Java 17+
