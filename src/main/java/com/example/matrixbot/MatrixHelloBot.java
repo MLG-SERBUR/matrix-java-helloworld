@@ -115,6 +115,12 @@ public class MatrixHelloBot {
                                 // run export in a new thread so we don't block the sync loop
                                 final String fb = prevBatch;
                                 new Thread(() -> exportRoomHistory(client, mapper, url, accessToken, roomId, hours, fb)).start();
+                            } else if (trimmed.matches("!ollama(\\d+)h")) {
+                                if (userId != null && userId.equals(sender)) continue;
+                                int hours = Integer.parseInt(trimmed.replaceAll("[^0-9]", ""));
+                                System.out.println("Received ollama chat logs command in " + roomId + " from " + sender + " (" + hours + "h)");
+                                final String fb = prevBatch;
+                                new Thread(() -> queryOllamaWithChatLogs(client, mapper, url, accessToken, roomId, hours, fb)).start();
                             }
                         }
                     }
@@ -233,5 +239,125 @@ public class MatrixHelloBot {
         }
     }
 
-    
+    private static void queryOllamaWithChatLogs(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, int hours, String fromToken) {
+        try {
+            sendText(client, mapper, url, accessToken, roomId, "Querying Ollama with chat logs from last " + hours + "h...");
+
+            java.util.List<String> chatLogs = fetchRoomHistory(client, mapper, url, accessToken, roomId, hours, fromToken);
+            if (chatLogs.isEmpty()) {
+                sendText(client, mapper, url, accessToken, roomId, "No chat logs found for the last " + hours + "h.");
+                return;
+            }
+
+            String prompt = "Analyze the following chat logs and provide a summary or answer any questions based on the context:\n\n" + String.join("\n", chatLogs);
+
+            // Make HTTP POST request to Ollama API
+            String ollamaUrl = System.getenv("OLLAMA_API_URL"); // Expecting Ollama API URL as an environment variable
+            if (ollamaUrl == null) {
+                sendText(client, mapper, url, accessToken, roomId, "OLLAMA_API_URL environment variable is not set.");
+                return;
+            }
+
+            Map<String, Object> ollamaPayload = Map.of(
+                "model", "phi3", // Assuming 'phi3' model is available in Ollama
+                "prompt", prompt,
+                "stream", false
+            );
+            String jsonPayload = mapper.writeValueAsString(ollamaPayload);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(ollamaUrl + "/api/generate"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(jsonPayload))
+                    .build();
+
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                JsonNode ollamaResponse = mapper.readTree(response.body());
+                String ollamaAnswer = ollamaResponse.path("response").asText("No response from Ollama.");
+                sendText(client, mapper, url, accessToken, roomId, "Ollama's response: " + ollamaAnswer);
+            } else {
+                sendText(client, mapper, url, accessToken, roomId, "Failed to get response from Ollama. Status: " + response.statusCode() + ", Body: " + response.body());
+            }
+
+        } catch (Exception e) {
+            System.out.println("Failed to query Ollama with chat logs: " + e.getMessage());
+            sendText(client, mapper, url, accessToken, roomId, "Error querying Ollama: " + e.getMessage());
+        }
+    }
+
+    private static java.util.List<String> fetchRoomHistory(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, int hours, String fromToken) {
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        long now = System.currentTimeMillis();
+        long cutoff = now - (long) hours * 3600L * 1000L;
+
+        // If we don't have a pagination token, try to get one via a short sync
+        if (fromToken == null) {
+            try {
+                HttpRequest syncReq = HttpRequest.newBuilder()
+                        .uri(URI.create(url + "/_matrix/client/v3/sync?timeout=0"))
+                        .header("Authorization", "Bearer " + accessToken)
+                        .GET()
+                        .build();
+                HttpResponse<String> syncResp = client.send(syncReq, HttpResponse.BodyHandlers.ofString());
+                if (syncResp.statusCode() == 200) {
+                    JsonNode root = mapper.readTree(syncResp.body());
+                    JsonNode roomNode = root.path("rooms").path("join").path(roomId);
+                    if (!roomNode.isMissingNode()) {
+                         fromToken = roomNode.path("timeline").path("prev_batch").asText(null);
+                    }
+                }
+            } catch (Exception ignore) {
+                // ignore errors here, we'll just start fetching from the latest available if sync fails
+            }
+        }
+
+        String token = fromToken;
+        int safety = 0;
+
+        while (token != null && safety < 100) {
+            safety++;
+            try {
+                String messagesUrl = url + "/_matrix/client/v3/rooms/" + URLEncoder.encode(roomId, StandardCharsets.UTF_8)
+                        + "/messages?from=" + URLEncoder.encode(token, StandardCharsets.UTF_8) + "&dir=b&limit=100";
+                HttpRequest msgReq = HttpRequest.newBuilder()
+                        .uri(URI.create(messagesUrl))
+                        .header("Authorization", "Bearer " + accessToken)
+                        .GET()
+                        .build();
+                HttpResponse<String> msgResp = client.send(msgReq, HttpResponse.BodyHandlers.ofString());
+                if (msgResp.statusCode() != 200) {
+                    System.out.println("Failed to fetch messages: " + msgResp.statusCode() + " - " + msgResp.body());
+                    break;
+                }
+                JsonNode root = mapper.readTree(msgResp.body());
+                JsonNode chunk = root.path("chunk");
+                if (!chunk.isArray() || chunk.size() == 0) break;
+
+                for (JsonNode ev : chunk) {
+                    if (!"m.room.message".equals(ev.path("type").asText(null))) continue;
+                    long originServerTs = ev.path("origin_server_ts").asLong(0);
+                    if (originServerTs < cutoff) {
+                        token = null; // Reached messages older than cutoff
+                        break;
+                    }
+                    String body = ev.path("content").path("body").asText(null);
+                    String sender = ev.path("sender").asText(null);
+                    if (body != null && sender != null) {
+                        lines.add("[" + Instant.ofEpochMilli(originServerTs) + "] <" + sender + "> " + body);
+                    }
+                }
+                if (token != null) {
+                     token = root.path("end").asText(null);
+                }
+
+            } catch (Exception e) {
+                System.out.println("Error fetching room history: " + e.getMessage());
+                break;
+            }
+        }
+        java.util.Collections.reverse(lines);
+        return lines;
+    }
 }
