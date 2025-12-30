@@ -332,6 +332,16 @@ public class MatrixHelloBot {
         }
     }
 
+    private static class ChatLogsResult {
+        public java.util.List<String> logs;
+        public String firstEventId;
+        
+        ChatLogsResult(java.util.List<String> logs, String firstEventId) {
+            this.logs = logs;
+            this.firstEventId = firstEventId;
+        }
+    }
+
     private static void queryArliAIWithChatLogs(HttpClient client, ObjectMapper mapper, String url, String accessToken, String responseRoomId, String exportRoomId, int hours, String fromToken, String question, Config config, long startTimestamp, String timezoneAbbr) {
         try {
             ZoneId zoneId = getZoneIdFromAbbr(timezoneAbbr);
@@ -350,17 +360,17 @@ public class MatrixHelloBot {
             // Calculate the UTC time range for filtering
             long endTime = startTimestamp > 0 ? startTimestamp + (long) hours * 3600L * 1000L : -1;
             
-            java.util.List<String> chatLogs = fetchRoomHistory(client, mapper, url, accessToken, exportRoomId, hours, fromToken, startTimestamp, endTime, zoneId);
-            if (chatLogs.isEmpty()) {
+            ChatLogsResult result = fetchRoomHistory(client, mapper, url, accessToken, exportRoomId, hours, fromToken, startTimestamp, endTime, zoneId);
+            if (result.logs.isEmpty()) {
                 sendMarkdown(client, mapper, url, accessToken, responseRoomId, "No chat logs found for " + timeInfo + " in " + exportRoomId + ".");
                 return;
             }
 
             String prompt = "";
             if (question != null && !question.isEmpty()) {
-                prompt = "Given the following chat logs, answer the question: '" + question + "'\\n\\n" + String.join("\\n", chatLogs);
+                prompt = "Given the following chat logs, answer the question: '" + question + "'\\n\\n" + String.join("\\n", result.logs);
             } else {
-                prompt = "Give a high level overview of the following chat logs. Use only a title and timestamp for each topic and only include one or more chat messages verbatim (with username) as bullet points for each topic. Then summarize with bullet points all of the chat at end:\\n\\n" + String.join("\\n", chatLogs);
+                prompt = "Give a high level overview of the following chat logs. Use only a title and timestamp for each topic and only include one or more chat messages verbatim (with username) as bullet points for each topic. Then summarize with bullet points all of the chat at end:\\n\\n" + String.join("\\n", result.logs);
             }
 
             // Make HTTP POST request to Arli AI API
@@ -395,6 +405,13 @@ public class MatrixHelloBot {
             if (response.statusCode() == 200) {
                 JsonNode arliResponse = mapper.readTree(response.body());
                 String arliAnswer = arliResponse.path("choices").get(0).path("message").path("content").asText("No response from Arli AI.");
+                
+                // Append link to the first message if available
+                if (result.firstEventId != null && startTimestamp > 0) {
+                    String messageLink = "https://matrix.to/#/" + exportRoomId + "/" + result.firstEventId;
+                    arliAnswer += "\n\n" + messageLink;
+                }
+                
                 sendMarkdown(client, mapper, url, accessToken, responseRoomId, arliAnswer);
             } else {
                 sendMarkdown(client, mapper, url, accessToken, responseRoomId, "Failed to get response from Arli AI. Status: " + response.statusCode() + ", Body: " + response.body());
@@ -407,11 +424,13 @@ public class MatrixHelloBot {
     }
 
     private static java.util.List<String> fetchRoomHistory(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, int hours, String fromToken) {
-        return fetchRoomHistory(client, mapper, url, accessToken, roomId, hours, fromToken, -1, -1, ZoneId.of("America/Los_Angeles"));
+        ChatLogsResult result = fetchRoomHistory(client, mapper, url, accessToken, roomId, hours, fromToken, -1, -1, ZoneId.of("America/Los_Angeles"));
+        return result.logs;
     }
 
-    private static java.util.List<String> fetchRoomHistory(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, int hours, String fromToken, long startTimestamp, long endTime, ZoneId zoneId) {
+    private static ChatLogsResult fetchRoomHistory(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, int hours, String fromToken, long startTimestamp, long endTime, ZoneId zoneId) {
         java.util.List<String> lines = new java.util.ArrayList<>();
+        String firstEventId = null;
         
         // Calculate the time range
         // If startTimestamp is provided (arliai-ts), use it as start and add duration for end
@@ -478,12 +497,17 @@ public class MatrixHelloBot {
                     
                     String body = ev.path("content").path("body").asText(null);
                     String sender = ev.path("sender").asText(null);
+                    String eventId = ev.path("event_id").asText(null);
                     if (body != null && sender != null) {
                         // Format timestamp with timezone (convert UTC to user's timezone)
                         String timestamp = java.time.Instant.ofEpochMilli(originServerTs)
                                 .atZone(zoneId)
                                 .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm z"));
                         lines.add("[" + timestamp + "] <" + sender + "> " + body);
+                        
+                        // Track the event ID of the oldest message in the range
+                        // Since we're iterating newest to oldest, keep updating until we finish
+                        firstEventId = eventId;
                     }
                 }
                 
@@ -501,7 +525,7 @@ public class MatrixHelloBot {
             }
         }
         java.util.Collections.reverse(lines);
-        return lines;
+        return new ChatLogsResult(lines, firstEventId);
     }
 
     private static ZoneId getZoneIdFromAbbr(String timezoneAbbr) {
