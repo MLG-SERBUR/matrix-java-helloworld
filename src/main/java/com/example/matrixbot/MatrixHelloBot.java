@@ -1604,8 +1604,14 @@ public class MatrixHelloBot {
             if (lastReadEventId != null) {
                 // Check if it's the latest message
                 boolean isLatest = isLatestMessage(client, mapper, url, accessToken, exportRoomId, lastReadEventId);
-                if (!isLatest) {
-                    String messageLink = "https://matrix.to/#/" + exportRoomId + "/" + lastReadEventId;
+                String messageLink = "https://matrix.to/#/" + exportRoomId + "/" + lastReadEventId;
+                
+                if (isLatest) {
+                    // User is caught up - show message with link to latest
+                    response.append(" no unread. Latest: ");
+                    response.append(messageLink).append("\n");
+                } else {
+                    // User is behind - show the message they last read
                     String messageContent = sanitizeUserIds(getMessageContent(client, mapper, url, accessToken, exportRoomId, lastReadEventId));
                     response.append(" read: ");
                     response.append(messageLink).append("\n");
