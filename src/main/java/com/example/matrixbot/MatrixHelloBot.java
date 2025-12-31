@@ -1730,6 +1730,21 @@ public class MatrixHelloBot {
                 return null;
             }
             
+            // Get the main timeline events to check against
+            JsonNode timeline = roomNode.path("timeline").path("events");
+            java.util.List<String> mainTimelineEvents = new java.util.ArrayList<>();
+            if (timeline.isArray()) {
+                for (JsonNode ev : timeline) {
+                    String eventId = ev.path("event_id").asText(null);
+                    if (eventId != null) {
+                        mainTimelineEvents.add(eventId);
+                    }
+                }
+            }
+            
+            // Collect all valid main timeline receipts with their timestamps
+            java.util.Map<Long, String> receiptsWithTimestamps = new java.util.TreeMap<>(java.util.Collections.reverseOrder());
+            
             // Check ephemeral events for read receipts
             JsonNode ephemeral = roomNode.path("ephemeral").path("events");
             if (ephemeral.isArray()) {
@@ -1742,14 +1757,25 @@ public class MatrixHelloBot {
                             String eventId = eventIds.next();
                             JsonNode receiptData = content.path(eventId).path("m.read");
                             if (receiptData.has(userId)) {
-                                // Verify this is a main timeline event by fetching it
-                                if (isMainTimelineEvent(client, mapper, url, accessToken, roomId, eventId)) {
-                                    return eventId;
+                                long timestamp = receiptData.path(userId).asLong(0);
+                                // Check if this event is in the main timeline
+                                if (mainTimelineEvents.contains(eventId)) {
+                                    receiptsWithTimestamps.put(timestamp, eventId);
+                                } else {
+                                    // Fetch and verify it's not a thread reply
+                                    if (isMainTimelineEvent(client, mapper, url, accessToken, roomId, eventId, mainTimelineEvents)) {
+                                        receiptsWithTimestamps.put(timestamp, eventId);
+                                    }
                                 }
                             }
                         }
                     }
                 }
+            }
+            
+            // Return the most recent receipt (highest timestamp)
+            if (!receiptsWithTimestamps.isEmpty()) {
+                return receiptsWithTimestamps.values().iterator().next();
             }
             
             // If not found in ephemeral, try to get from room account data
@@ -1765,8 +1791,12 @@ public class MatrixHelloBot {
                 JsonNode accountData = mapper.readTree(accountResp.body());
                 String lastRead = accountData.path("event_id").asText(null);
                 if (lastRead != null && !lastRead.isEmpty()) {
-                    // Verify this is a main timeline event
-                    if (isMainTimelineEvent(client, mapper, url, accessToken, roomId, lastRead)) {
+                    // Check if it's in main timeline
+                    if (mainTimelineEvents.contains(lastRead)) {
+                        return lastRead;
+                    }
+                    // Or verify it's main timeline
+                    if (isMainTimelineEvent(client, mapper, url, accessToken, roomId, lastRead, mainTimelineEvents)) {
                         return lastRead;
                     }
                 }
@@ -1780,8 +1810,13 @@ public class MatrixHelloBot {
         }
     }
 
-    private static boolean isMainTimelineEvent(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, String eventId) {
+    private static boolean isMainTimelineEvent(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, String eventId, java.util.List<String> mainTimelineEvents) {
         try {
+            // First check if it's directly in the timeline
+            if (mainTimelineEvents.contains(eventId)) {
+                return true;
+            }
+            
             // Fetch the event to check if it has a thread relation
             String encodedRoom = URLEncoder.encode(roomId, StandardCharsets.UTF_8);
             String encodedEvent = URLEncoder.encode(eventId, StandardCharsets.UTF_8);
