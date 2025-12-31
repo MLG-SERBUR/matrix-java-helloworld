@@ -347,8 +347,13 @@ public class MatrixHelloBot {
 
     private static String sanitizeUserIds(String message) {
         // Replace user IDs like @username:domain with `@username:domain` to prevent pings
-        // This regex matches Matrix user IDs: @localpart:domain
-        return message.replaceAll("(@[a-zA-Z0-9._=-]+:[a-zA-Z0-9.-]+)", "`$1`");
+        // This regex matches Matrix user IDs: @localpart:domain that are NOT already in backticks
+        // Pattern: @ followed by alphanumeric/underscore/dot/equals/dash, then :, then domain
+        // The backticks prevent the user ID from being interpreted as a mention
+        // (?<!`) - not preceded by backtick
+        // (?<!`<) - not preceded by backtick+< (handles AI returning `<@user:domain>`)
+        // (?!`) - not followed by backtick
+        return message.replaceAll("(?<!`)(?<!`<)(@[a-zA-Z0-9._=-]+:[a-zA-Z0-9.-]+)(?!`)", "`$1`");
     }
 
     private static void exportRoomHistory(HttpClient client, ObjectMapper mapper, String url, String accessToken, String responseRoomId, String exportRoomId, int hours, String fromToken) {
