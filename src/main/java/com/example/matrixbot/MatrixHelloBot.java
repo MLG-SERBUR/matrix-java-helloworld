@@ -30,6 +30,34 @@ public class MatrixHelloBot {
         public String cerebrasApiKey;
     }
     
+    // Centralized prompt configuration
+    private static class Prompts {
+        public static final String SYSTEM_OVERVIEW = "You provide high level overview of a chat log.";
+        
+        public static final String QUESTION_PREFIX = "Given the following chat logs, answer the question: '";
+        public static final String QUESTION_SUFFIX = "'\\n\\n";
+        
+        public static final String OVERVIEW_PREFIX = "Give a high level overview of the following chat logs. Use only a title and timestamp for each topic and only include one or more chat messages verbatim (with username) as bullet points for each topic. Then summarize with bullet points all of the chat at end:\\n\\n";
+    }
+    
+    // Helper method to build the user prompt
+    private static String buildPrompt(String question, java.util.List<String> logs) {
+        String logsStr = String.join("\\n", logs);
+        if (question != null && !question.isEmpty()) {
+            return Prompts.QUESTION_PREFIX + question + Prompts.QUESTION_SUFFIX + logsStr;
+        } else {
+            return Prompts.OVERVIEW_PREFIX + logsStr;
+        }
+    }
+    
+    // Helper method to build the messages list for the AI API
+    private static java.util.List<Map<String, String>> buildMessages(String prompt) {
+        java.util.List<Map<String, String>> messages = new java.util.ArrayList<>();
+        messages.add(Map.of("role", "system", "content", Prompts.SYSTEM_OVERVIEW));
+        messages.add(Map.of("role", "user", "content", prompt));
+        return messages;
+    }
+    
     public static void main(String[] args) throws Exception {
         // Load configuration from file
         String configPath = args.length > 0 ? args[0] : "config.json";
@@ -417,12 +445,7 @@ public class MatrixHelloBot {
                 return;
             }
 
-            String prompt = "";
-            if (question != null && !question.isEmpty()) {
-                prompt = "Given the following chat logs, answer the question: '" + question + "'\\n\\n" + String.join("\\n", result.logs);
-            } else {
-                prompt = "Give a high level overview of the following chat logs. Use only a title and timestamp for each topic and only include one or more chat messages verbatim (with username) as bullet points for each topic. Then summarize with bullet points all of the chat at end:\\n\\n" + String.join("\\n", result.logs);
-            }
+            String prompt = buildPrompt(question, result.logs);
 
             // Make HTTP POST request to Arli AI API
             String arliApiUrl = "https://api.arliai.com";
@@ -433,9 +456,7 @@ public class MatrixHelloBot {
                 return;
             }
 
-            java.util.List<Map<String, String>> messages = new java.util.ArrayList<>();
-            messages.add(Map.of("role", "system", "content", "You provide high level overview of a chat log."));
-            messages.add(Map.of("role", "user", "content", prompt));
+            java.util.List<Map<String, String>> messages = buildMessages(prompt);
 
             Map<String, Object> arliPayload = Map.of(
                 "model", "Gemma-3-27B-it", // Using a suitable Arli AI model
@@ -498,12 +519,7 @@ public class MatrixHelloBot {
                 return;
             }
 
-            String prompt = "";
-            if (question != null && !question.isEmpty()) {
-                prompt = "Given the following chat logs, answer the question: '" + question + "'\\n\\n" + String.join("\\n", result.logs);
-            } else {
-                prompt = "Give a high level overview of the following chat logs. Use only a title and timestamp for each topic and only include one or more chat messages verbatim (with username) as bullet points for each topic. Then summarize with bullet points all of the chat at end:\\n\\n" + String.join("\\n", result.logs);
-            }
+            String prompt = buildPrompt(question, result.logs);
 
             // Make HTTP POST request to Cerebras AI API
             String cerebrasApiUrl = "https://api.cerebras.ai";
@@ -514,9 +530,7 @@ public class MatrixHelloBot {
                 return;
             }
 
-            java.util.List<Map<String, String>> messages = new java.util.ArrayList<>();
-            messages.add(Map.of("role", "system", "content", "You provide high level overview of a chat log."));
-            messages.add(Map.of("role", "user", "content", prompt));
+            java.util.List<Map<String, String>> messages = buildMessages(prompt);
 
             Map<String, Object> cerebrasPayload = Map.of(
                 "model", "gpt-oss-120b",
