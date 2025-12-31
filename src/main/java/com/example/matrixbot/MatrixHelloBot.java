@@ -27,6 +27,7 @@ public class MatrixHelloBot {
         public String commandRoomId;
         public String exportRoomId;
         public String arliApiKey;
+        public String cerebrasApiKey;
     }
     
     public static void main(String[] args) throws Exception {
@@ -189,6 +190,51 @@ public class MatrixHelloBot {
                                     final String finalRoomId = roomId;
                                     final String finalTimezoneAbbr = timezoneAbbr;
                                     new Thread(() -> queryArliAIWithChatLogs(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, finalDurationHours, finalPrevBatch, finalQuestion, finalConfig, finalStartTimestamp, finalTimezoneAbbr)).start();
+                                }
+                            } else if (trimmed.matches("!cerebras\\s+[A-Z]{3}\\s+\\d+h(?:\\s+(.*))?")) {
+                                if (userId != null && userId.equals(sender)) continue;
+
+                                java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("!cerebras\\s+([A-Z]{3})\\s+(\\d+)h(?:\\s+(.*))?").matcher(trimmed);
+                                if (matcher.matches()) {
+                                    String timezoneAbbr = matcher.group(1);
+                                    int hours = Integer.parseInt(matcher.group(2));
+                                    String question = matcher.group(3) != null ? matcher.group(3).trim() : null;
+
+                                    System.out.println("Received cerebras command in " + roomId + " from " + sender + " (" + timezoneAbbr + ", " + hours + "h" + (question != null ? ", question: " + question : "") + ")");
+                                    final int finalHours = hours;
+                                    final String finalQuestion = question;
+                                    final String finalPrevBatch = prevBatch;
+                                    final Config finalConfig = config;
+                                    final String finalRoomId = roomId;
+                                    final String finalTimezoneAbbr = timezoneAbbr;
+                                    new Thread(() -> queryCerebrasAIWithChatLogs(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, finalHours, finalPrevBatch, finalQuestion, finalConfig, -1, finalTimezoneAbbr)).start();
+                                }
+                            } else if (trimmed.matches("!cerebras-ts\\s+\\d{4}-\\d{2}-\\d{2}-\\d{2}-\\d{2}\\s+[A-Z]{3}\\s+\\d+h(?:\\s+(.*))?")) {
+                                if (userId != null && userId.equals(sender)) continue;
+
+                                java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("!cerebras-ts\\s+(\\d{4}-\\d{2}-\\d{2}-\\d{2}-\\d{2})\\s+([A-Z]{3})\\s+(\\d+)h(?:\\s+(.*))?").matcher(trimmed);
+                                if (matcher.matches()) {
+                                    String startDateStr = matcher.group(1);
+                                    String timezoneAbbr = matcher.group(2);
+                                    int durationHours = Integer.parseInt(matcher.group(3));
+                                    String question = matcher.group(4) != null ? matcher.group(4).trim() : null;
+
+                                    ZoneId userZone = getZoneIdFromAbbr(timezoneAbbr);
+                                    long startTimestamp = java.time.LocalDateTime.parse(startDateStr, java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd-HH-mm"))
+                                            .atZone(userZone)
+                                            .withZoneSameInstant(ZoneId.of("UTC"))
+                                            .toInstant()
+                                            .toEpochMilli();
+
+                                    System.out.println("Received cerebras-ts command in " + roomId + " from " + sender + " (start=" + startDateStr + " " + timezoneAbbr + ", duration=" + durationHours + "h" + (question != null ? ", question: " + question : "") + ")");
+                                    final long finalStartTimestamp = startTimestamp;
+                                    final int finalDurationHours = durationHours;
+                                    final String finalQuestion = question;
+                                    final String finalPrevBatch = prevBatch;
+                                    final Config finalConfig = config;
+                                    final String finalRoomId = roomId;
+                                    final String finalTimezoneAbbr = timezoneAbbr;
+                                    new Thread(() -> queryCerebrasAIWithChatLogs(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, finalDurationHours, finalPrevBatch, finalQuestion, finalConfig, finalStartTimestamp, finalTimezoneAbbr)).start();
                                 }
                             }
                         }
@@ -420,6 +466,87 @@ public class MatrixHelloBot {
         } catch (Exception e) {
             System.out.println("Failed to query Arli AI with chat logs: " + e.getMessage());
             sendMarkdown(client, mapper, url, accessToken, responseRoomId, "Error querying Arli AI: " + e.getMessage());
+        }
+    }
+
+    private static void queryCerebrasAIWithChatLogs(HttpClient client, ObjectMapper mapper, String url, String accessToken, String responseRoomId, String exportRoomId, int hours, String fromToken, String question, Config config, long startTimestamp, String timezoneAbbr) {
+        try {
+            ZoneId zoneId = getZoneIdFromAbbr(timezoneAbbr);
+            String timeInfo = "";
+            if (startTimestamp > 0) {
+                // Convert UTC timestamp to user's timezone for display
+                String dateStr = java.time.Instant.ofEpochMilli(startTimestamp)
+                        .atZone(zoneId)
+                        .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm z"));
+                timeInfo = "starting at " + dateStr + " (next " + hours + "h)";
+            } else {
+                timeInfo = "last " + (hours > 0 ? hours + "h" : "all history");
+            }
+            sendMarkdown(client, mapper, url, accessToken, responseRoomId, "Querying Cerebras AI with chat logs from " + exportRoomId + " (" + timeInfo + (question != null ? " and question: " + question : "") + ")...");
+
+            // Calculate the UTC time range for filtering
+            long endTime = startTimestamp > 0 ? startTimestamp + (long) hours * 3600L * 1000L : -1;
+            
+            ChatLogsResult result = fetchRoomHistory(client, mapper, url, accessToken, exportRoomId, hours, fromToken, startTimestamp, endTime, zoneId);
+            if (result.logs.isEmpty()) {
+                sendMarkdown(client, mapper, url, accessToken, responseRoomId, "No chat logs found for " + timeInfo + " in " + exportRoomId + ".");
+                return;
+            }
+
+            String prompt = "";
+            if (question != null && !question.isEmpty()) {
+                prompt = "Given the following chat logs, answer the question: '" + question + "'\\n\\n" + String.join("\\n", result.logs);
+            } else {
+                prompt = "Give a high level overview of the following chat logs. Use only a title and timestamp for each topic and only include one or more chat messages verbatim (with username) as bullet points for each topic. Then summarize with bullet points all of the chat at end:\\n\\n" + String.join("\\n", result.logs);
+            }
+
+            // Make HTTP POST request to Cerebras AI API
+            String cerebrasApiUrl = "https://api.cerebras.ai";
+            String cerebrasApiKey = config.cerebrasApiKey;
+
+            if (cerebrasApiKey == null || cerebrasApiKey.isEmpty()) {
+                sendMarkdown(client, mapper, url, accessToken, responseRoomId, "CEREBRAS_API_KEY is not configured.");
+                return;
+            }
+
+            java.util.List<Map<String, String>> messages = new java.util.ArrayList<>();
+            messages.add(Map.of("role", "system", "content", "You provide high level overview of a chat log."));
+            messages.add(Map.of("role", "user", "content", prompt));
+
+            Map<String, Object> cerebrasPayload = Map.of(
+                "model", "gpt-oss-120b",
+                "messages", messages,
+                "stream", false
+            );
+            String jsonPayload = mapper.writeValueAsString(cerebrasPayload);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(cerebrasApiUrl + "/v1/chat/completions"))
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + cerebrasApiKey)
+                    .POST(HttpRequest.BodyPublishers.ofString(jsonPayload))
+                    .build();
+
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                JsonNode cerebrasResponse = mapper.readTree(response.body());
+                String cerebrasAnswer = cerebrasResponse.path("choices").get(0).path("message").path("content").asText("No response from Cerebras AI.");
+                
+                // Append link to the first message if available
+                if (result.firstEventId != null) {
+                    String messageLink = "https://matrix.to/#/" + exportRoomId + "/" + result.firstEventId;
+                    cerebrasAnswer += "\n\n" + messageLink;
+                }
+                
+                sendMarkdown(client, mapper, url, accessToken, responseRoomId, cerebrasAnswer);
+            } else {
+                sendMarkdown(client, mapper, url, accessToken, responseRoomId, "Failed to get response from Cerebras AI. Status: " + response.statusCode() + ", Body: " + response.body());
+            }
+
+        } catch (Exception e) {
+            System.out.println("Failed to query Cerebras AI with chat logs: " + e.getMessage());
+            sendMarkdown(client, mapper, url, accessToken, responseRoomId, "Error querying Cerebras AI: " + e.getMessage());
         }
     }
 
