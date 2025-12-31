@@ -1706,7 +1706,7 @@ public class MatrixHelloBot {
 
     private static String getReadReceipt(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, String userId) {
         try {
-            // Get read receipts for the user in this room (main timeline only)
+            // Get read receipts for the user in this room
             String encodedRoom = URLEncoder.encode(roomId, StandardCharsets.UTF_8);
             String encodedUser = URLEncoder.encode(userId, StandardCharsets.UTF_8);
             
@@ -1730,19 +1730,7 @@ public class MatrixHelloBot {
                 return null;
             }
             
-            // Get the main timeline events to check against
-            JsonNode timeline = roomNode.path("timeline").path("events");
-            java.util.List<String> mainTimelineEvents = new java.util.ArrayList<>();
-            if (timeline.isArray()) {
-                for (JsonNode ev : timeline) {
-                    String eventId = ev.path("event_id").asText(null);
-                    if (eventId != null) {
-                        mainTimelineEvents.add(eventId);
-                    }
-                }
-            }
-            
-            // Collect all valid main timeline receipts with their timestamps
+            // Collect all receipts with their timestamps
             java.util.Map<Long, String> receiptsWithTimestamps = new java.util.TreeMap<>(java.util.Collections.reverseOrder());
             
             // Check ephemeral events for read receipts
@@ -1758,15 +1746,7 @@ public class MatrixHelloBot {
                             JsonNode receiptData = content.path(eventId).path("m.read");
                             if (receiptData.has(userId)) {
                                 long timestamp = receiptData.path(userId).asLong(0);
-                                // Check if this event is in the main timeline
-                                if (mainTimelineEvents.contains(eventId)) {
-                                    receiptsWithTimestamps.put(timestamp, eventId);
-                                } else {
-                                    // Fetch and verify it's not a thread reply
-                                    if (isMainTimelineEvent(client, mapper, url, accessToken, roomId, eventId, mainTimelineEvents)) {
-                                        receiptsWithTimestamps.put(timestamp, eventId);
-                                    }
-                                }
+                                receiptsWithTimestamps.put(timestamp, eventId);
                             }
                         }
                     }
@@ -1791,14 +1771,7 @@ public class MatrixHelloBot {
                 JsonNode accountData = mapper.readTree(accountResp.body());
                 String lastRead = accountData.path("event_id").asText(null);
                 if (lastRead != null && !lastRead.isEmpty()) {
-                    // Check if it's in main timeline
-                    if (mainTimelineEvents.contains(lastRead)) {
-                        return lastRead;
-                    }
-                    // Or verify it's main timeline
-                    if (isMainTimelineEvent(client, mapper, url, accessToken, roomId, lastRead, mainTimelineEvents)) {
-                        return lastRead;
-                    }
+                    return lastRead;
                 }
             }
             
@@ -1807,59 +1780,6 @@ public class MatrixHelloBot {
         } catch (Exception e) {
             System.out.println("Error getting read receipt: " + e.getMessage());
             return null;
-        }
-    }
-
-    private static boolean isMainTimelineEvent(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, String eventId, java.util.List<String> mainTimelineEvents) {
-        try {
-            // First check if it's directly in the timeline
-            if (mainTimelineEvents.contains(eventId)) {
-                return true;
-            }
-            
-            // Fetch the event to check if it has a thread relation
-            String encodedRoom = URLEncoder.encode(roomId, StandardCharsets.UTF_8);
-            String encodedEvent = URLEncoder.encode(eventId, StandardCharsets.UTF_8);
-            String eventUrl = url + "/_matrix/client/v3/rooms/" + encodedRoom + "/event/" + encodedEvent;
-            
-            HttpRequest eventReq = HttpRequest.newBuilder()
-                    .uri(URI.create(eventUrl))
-                    .header("Authorization", "Bearer " + accessToken)
-                    .GET()
-                    .build();
-            HttpResponse<String> eventResp = client.send(eventReq, HttpResponse.BodyHandlers.ofString());
-            
-            if (eventResp.statusCode() != 200) {
-                return false;
-            }
-            
-            JsonNode event = mapper.readTree(eventResp.body());
-            
-            // Check if the event has a thread relation (indicating it's a thread reply)
-            JsonNode relatesTo = event.path("content").path("m.relates_to");
-            if (relatesTo.isMissingNode()) {
-                return true; // No relation, so it's main timeline
-            }
-            
-            String relType = relatesTo.path("rel_type").asText(null);
-            if ("m.thread".equals(relType)) {
-                return false; // This is a thread reply
-            }
-            
-            // Also check for thread root in unsigned data
-            JsonNode unsigned = event.path("unsigned");
-            if (unsigned.has("m.relations")) {
-                JsonNode relations = unsigned.path("m.relations");
-                if (relations.has("m.thread")) {
-                    return false; // Part of a thread
-                }
-            }
-            
-            return true; // Not a thread reply
-            
-        } catch (Exception e) {
-            System.out.println("Error checking if event is main timeline: " + e.getMessage());
-            return false;
         }
     }
 
