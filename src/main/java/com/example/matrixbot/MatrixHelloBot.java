@@ -1049,10 +1049,6 @@ public class MatrixHelloBot {
                         break; // We've collected all messages in our time range
                     }
                     
-                    if (results.size() >= maxResults) {
-                        break; // Stop if we reached the limit
-                    }
-                    
                     if (token != null) {
                          token = root.path("end").asText(null);
                     }
