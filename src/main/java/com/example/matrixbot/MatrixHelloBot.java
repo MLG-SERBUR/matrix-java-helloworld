@@ -376,6 +376,13 @@ public class MatrixHelloBot {
                                 } else {
                                     sendText(client, mapper, url, config.accessToken, roomId, "No running operations found to abort.");
                                 }
+                            } else if ("!last".equals(trimmed)) {
+                                if (userId != null && userId.equals(sender)) continue;
+                                System.out.println("Received last command in " + roomId + " from " + sender);
+                                final String finalSender = sender;
+                                final String finalRoomId = roomId;
+                                final Config finalConfig = config;
+                                new Thread(() -> sendLastMessageAndReadReceipt(client, mapper, url, finalConfig.accessToken, finalConfig.exportRoomId, finalSender, finalRoomId)).start();
                             } else if ("!help".equals(trimmed)) {
                                 if (userId != null && userId.equals(sender)) continue;
                                 System.out.println("Received help command in " + roomId + " from " + sender);
@@ -383,6 +390,9 @@ public class MatrixHelloBot {
                                     "**!testcommand** - Test if the bot is responding\n\n" +
                                     "**!export<duration>h** - Export chat history (e.g., `!export24h`)\n" +
                                     "  - Duration: Number of hours to export\n\n" +
+                                    "**!last** - Print links to your last message and last read message in the export room\n" +
+                                    "  - Shows your most recent message sent in the export room\n" +
+                                    "  - Shows your last read message in the export room (if not caught up, shows the difference)\n\n" +
                                     "**!arliai <timezone> <duration>h [question]** - Query Arli AI with chat logs\n" +
                                     "  - Timezone: PST, PDT, MST, MDT, CST, CDT, EST, EDT, UTC, GMT\n" +
                                     "  - Duration: Number of hours of chat history\n" +
@@ -1568,6 +1578,240 @@ public class MatrixHelloBot {
             System.out.println("Failed to perform search: " + e.getMessage());
             sendText(client, mapper, url, accessToken, responseRoomId, "Error performing search: " + e.getMessage());
             runningOperations.remove(sender);
+        }
+    }
+
+    private static void sendLastMessageAndReadReceipt(HttpClient client, ObjectMapper mapper, String url, String accessToken, String exportRoomId, String sender, String responseRoomId) {
+        try {
+            // Get the last message sent by the sender in the export room
+            String lastMessageEventId = getLastMessageFromSender(client, mapper, url, accessToken, exportRoomId, sender);
+            
+            // Get the last read message for the sender in the export room
+            String lastReadEventId = getReadReceipt(client, mapper, url, accessToken, exportRoomId, sender);
+            
+            StringBuilder response = new StringBuilder();
+            
+            // Last message sent by sender
+            if (lastMessageEventId != null) {
+                String messageLink = "https://matrix.to/#/" + exportRoomId + "/" + lastMessageEventId;
+                response.append("**Your last message:**\n");
+                response.append(messageLink).append("\n\n");
+            } else {
+                response.append("**Your last message:** No messages found from you in the export room.\n\n");
+            }
+            
+            // Last read message
+            if (lastReadEventId != null) {
+                // Check if it's the latest message
+                boolean isLatest = isLatestMessage(client, mapper, url, accessToken, exportRoomId, lastReadEventId);
+                if (!isLatest) {
+                    String messageLink = "https://matrix.to/#/" + exportRoomId + "/" + lastReadEventId;
+                    response.append("**Your last read message:**\n");
+                    response.append(messageLink).append("\n");
+                    response.append("\n");
+                }
+            } else {
+                response.append("**Your last read message:** No read receipt found.\n");
+            }
+            
+            sendMarkdown(client, mapper, url, accessToken, responseRoomId, response.toString());
+            
+        } catch (Exception e) {
+            System.out.println("Failed to get last message info: " + e.getMessage());
+            sendText(client, mapper, url, accessToken, responseRoomId, "Error getting last message info: " + e.getMessage());
+        }
+    }
+
+    private static String getLastMessageFromSender(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, String sender) {
+        try {
+            // Get room state to find the timeline
+            // We'll fetch recent messages and find the last one from this sender
+            String syncUrl = url + "/_matrix/client/v3/sync?timeout=0";
+            HttpRequest syncReq = HttpRequest.newBuilder()
+                    .uri(URI.create(syncUrl))
+                    .header("Authorization", "Bearer " + accessToken)
+                    .GET()
+                    .build();
+            HttpResponse<String> syncResp = client.send(syncReq, HttpResponse.BodyHandlers.ofString());
+            
+            if (syncResp.statusCode() != 200) {
+                System.out.println("Failed to sync for last message: " + syncResp.statusCode());
+                return null;
+            }
+            
+            JsonNode root = mapper.readTree(syncResp.body());
+            JsonNode roomNode = root.path("rooms").path("join").path(roomId);
+            if (roomNode.isMissingNode()) {
+                return null;
+            }
+            
+            // Get the prev_batch token to fetch history
+            String prevBatch = roomNode.path("timeline").path("prev_batch").asText(null);
+            if (prevBatch == null) {
+                return null;
+            }
+            
+            // Fetch recent messages going backwards
+            String messagesUrl = url + "/_matrix/client/v3/rooms/" + URLEncoder.encode(roomId, StandardCharsets.UTF_8)
+                    + "/messages?from=" + URLEncoder.encode(prevBatch, StandardCharsets.UTF_8) + "&dir=b&limit=100";
+            HttpRequest msgReq = HttpRequest.newBuilder()
+                    .uri(URI.create(messagesUrl))
+                    .header("Authorization", "Bearer " + accessToken)
+                    .GET()
+                    .build();
+            HttpResponse<String> msgResp = client.send(msgReq, HttpResponse.BodyHandlers.ofString());
+            
+            if (msgResp.statusCode() != 200) {
+                System.out.println("Failed to fetch messages for last message: " + msgResp.statusCode());
+                return null;
+            }
+            
+            JsonNode msgRoot = mapper.readTree(msgResp.body());
+            JsonNode chunk = msgRoot.path("chunk");
+            if (!chunk.isArray()) {
+                return null;
+            }
+            
+            // Find the last message from this sender
+            for (JsonNode ev : chunk) {
+                if (!"m.room.message".equals(ev.path("type").asText(null))) continue;
+                String msgSender = ev.path("sender").asText(null);
+                if (sender.equals(msgSender)) {
+                    return ev.path("event_id").asText(null);
+                }
+            }
+            
+            // Also check current timeline events
+            JsonNode timeline = roomNode.path("timeline").path("events");
+            if (timeline.isArray()) {
+                for (JsonNode ev : timeline) {
+                    if (!"m.room.message".equals(ev.path("type").asText(null))) continue;
+                    String msgSender = ev.path("sender").asText(null);
+                    if (sender.equals(msgSender)) {
+                        return ev.path("event_id").asText(null);
+                    }
+                }
+            }
+            
+            return null;
+            
+        } catch (Exception e) {
+            System.out.println("Error getting last message from sender: " + e.getMessage());
+            return null;
+        }
+    }
+
+    private static String getReadReceipt(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, String userId) {
+        try {
+            // Get read receipts for the user in this room
+            // Read receipts are stored in the room state under m.read receipts
+            String encodedRoom = URLEncoder.encode(roomId, StandardCharsets.UTF_8);
+            String encodedUser = URLEncoder.encode(userId, StandardCharsets.UTF_8);
+            
+            // First, try to get the read receipt from the sync response
+            String syncUrl = url + "/_matrix/client/v3/sync?timeout=0";
+            HttpRequest syncReq = HttpRequest.newBuilder()
+                    .uri(URI.create(syncUrl))
+                    .header("Authorization", "Bearer " + accessToken)
+                    .GET()
+                    .build();
+            HttpResponse<String> syncResp = client.send(syncReq, HttpResponse.BodyHandlers.ofString());
+            
+            if (syncResp.statusCode() != 200) {
+                System.out.println("Failed to sync for read receipt: " + syncResp.statusCode());
+                return null;
+            }
+            
+            JsonNode root = mapper.readTree(syncResp.body());
+            JsonNode roomNode = root.path("rooms").path("join").path(roomId);
+            if (roomNode.isMissingNode()) {
+                return null;
+            }
+            
+            // Check ephemeral events for read receipts
+            JsonNode ephemeral = roomNode.path("ephemeral").path("events");
+            if (ephemeral.isArray()) {
+                for (JsonNode ev : ephemeral) {
+                    if ("m.receipt".equals(ev.path("type").asText(null))) {
+                        JsonNode content = ev.path("content");
+                        // content is a map of event_id -> { "m.read": { user_id: timestamp } }
+                        Iterator<String> eventIds = content.fieldNames();
+                        while (eventIds.hasNext()) {
+                            String eventId = eventIds.next();
+                            JsonNode receiptData = content.path(eventId).path("m.read");
+                            if (receiptData.has(userId)) {
+                                return eventId;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // If not found in ephemeral, try to get from room account data
+            String accountDataUrl = url + "/_matrix/client/v3/user/" + encodedUser + "/rooms/" + encodedRoom + "/account_data/m.read";
+            HttpRequest accountReq = HttpRequest.newBuilder()
+                    .uri(URI.create(accountDataUrl))
+                    .header("Authorization", "Bearer " + accessToken)
+                    .GET()
+                    .build();
+            HttpResponse<String> accountResp = client.send(accountReq, HttpResponse.BodyHandlers.ofString());
+            
+            if (accountResp.statusCode() == 200) {
+                JsonNode accountData = mapper.readTree(accountResp.body());
+                // The content might contain the last read event
+                String lastRead = accountData.path("event_id").asText(null);
+                if (lastRead != null && !lastRead.isEmpty()) {
+                    return lastRead;
+                }
+            }
+            
+            return null;
+            
+        } catch (Exception e) {
+            System.out.println("Error getting read receipt: " + e.getMessage());
+            return null;
+        }
+    }
+
+    private static boolean isLatestMessage(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, String eventId) {
+        try {
+            // Get the latest message in the room
+            String syncUrl = url + "/_matrix/client/v3/sync?timeout=0";
+            HttpRequest syncReq = HttpRequest.newBuilder()
+                    .uri(URI.create(syncUrl))
+                    .header("Authorization", "Bearer " + accessToken)
+                    .GET()
+                    .build();
+            HttpResponse<String> syncResp = client.send(syncReq, HttpResponse.BodyHandlers.ofString());
+            
+            if (syncResp.statusCode() != 200) {
+                return false;
+            }
+            
+            JsonNode root = mapper.readTree(syncResp.body());
+            JsonNode roomNode = root.path("rooms").path("join").path(roomId);
+            if (roomNode.isMissingNode()) {
+                return false;
+            }
+            
+            // Check timeline events
+            JsonNode timeline = roomNode.path("timeline").path("events");
+            if (timeline.isArray() && timeline.size() > 0) {
+                // Find the latest message event
+                for (int i = timeline.size() - 1; i >= 0; i--) {
+                    JsonNode ev = timeline.get(i);
+                    if ("m.room.message".equals(ev.path("type").asText(null))) {
+                        String latestEventId = ev.path("event_id").asText(null);
+                        return eventId.equals(latestEventId);
+                    }
+                }
+            }
+            
+            return false;
+            
+        } catch (Exception e) {
+            System.out.println("Error checking if message is latest: " + e.getMessage());
+            return false;
         }
     }
 }
