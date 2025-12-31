@@ -58,6 +58,15 @@ public class MatrixHelloBot {
         return messages;
     }
     
+    // Helper method to append message link to AI answer
+    private static String appendMessageLink(String aiAnswer, String exportRoomId, String firstEventId) {
+        if (firstEventId != null) {
+            String messageLink = "https://matrix.to/#/" + exportRoomId + "/" + firstEventId;
+            return aiAnswer + "\n\n" + messageLink;
+        }
+        return aiAnswer;
+    }
+    
     public static void main(String[] args) throws Exception {
         // Load configuration from file
         String configPath = args.length > 0 ? args[0] : "config.json";
@@ -479,10 +488,7 @@ public class MatrixHelloBot {
                 String arliAnswer = arliResponse.path("choices").get(0).path("message").path("content").asText("No response from Arli AI.");
                 
                 // Append link to the first message if available
-                if (result.firstEventId != null) {
-                    String messageLink = "https://matrix.to/#/" + exportRoomId + "/" + result.firstEventId;
-                    arliAnswer += "\n\n" + messageLink;
-                }
+                arliAnswer = appendMessageLink(arliAnswer, exportRoomId, result.firstEventId);
                 
                 sendMarkdown(client, mapper, url, accessToken, responseRoomId, arliAnswer);
             } else {
@@ -553,10 +559,7 @@ public class MatrixHelloBot {
                 String cerebrasAnswer = cerebrasResponse.path("choices").get(0).path("message").path("content").asText("No response from Cerebras AI.");
                 
                 // Append link to the first message if available
-                if (result.firstEventId != null) {
-                    String messageLink = "https://matrix.to/#/" + exportRoomId + "/" + result.firstEventId;
-                    cerebrasAnswer += "\n\n" + messageLink;
-                }
+                cerebrasAnswer = appendMessageLink(cerebrasAnswer, exportRoomId, result.firstEventId);
                 
                 sendMarkdown(client, mapper, url, accessToken, responseRoomId, cerebrasAnswer);
             } else {
