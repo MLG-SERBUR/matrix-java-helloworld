@@ -383,10 +383,22 @@ public class MatrixHelloBot {
                                 final String finalRoomId = roomId;
                                 final Config finalConfig = config;
                                 new Thread(() -> sendLastMessageAndReadReceipt(client, mapper, url, finalConfig.accessToken, finalConfig.exportRoomId, finalSender, finalRoomId)).start();
+                            } else if ("!ping".equals(trimmed)) {
+                                if (userId != null && userId.equals(sender)) continue;
+                                System.out.println("Received ping command in " + roomId + " from " + sender);
+                                
+                                // Get the timestamp from the message event
+                                long messageTimestamp = ev.path("origin_server_ts").asLong(Instant.now().toEpochMilli());
+                                long currentTime = Instant.now().toEpochMilli();
+                                long latencyMs = currentTime - messageTimestamp;
+                                
+                                String response = "Pong! (ping took " + latencyMs + " ms to arrive)";
+                                sendText(client, mapper, url, config.accessToken, roomId, response);
                             } else if ("!help".equals(trimmed)) {
                                 if (userId != null && userId.equals(sender)) continue;
                                 System.out.println("Received help command in " + roomId + " from " + sender);
                                 String helpText = "**Matrix Bot Commands**\n\n" +
+                                    "**!ping** - Measure and report ping latency\n\n" +
                                     "**!testcommand** - Test if the bot is responding\n\n" +
                                     "**!export<duration>h** - Export chat history (e.g., `!export24h`)\n" +
                                     "  - Duration: Number of hours to export\n\n" +
@@ -1597,7 +1609,7 @@ public class MatrixHelloBot {
                 response.append("Your last sent: ");
                 response.append(messageLink).append("\n");
             } else {
-                response.append("Your last sent message: No messages found from you in the export room.\n\n");
+                response.append("No message sent recently.\n\n");
             }
             
             // Last read message
@@ -1611,13 +1623,9 @@ public class MatrixHelloBot {
                     response.append(" no unread. Latest: ");
                     response.append(messageLink).append("\n");
                 } else {
-                    // User is behind - show the message they last read
-                    String messageContent = sanitizeUserIds(getMessageContent(client, mapper, url, accessToken, exportRoomId, lastReadEventId));
+                    // User is behind - show only the link to the message they last read
                     response.append(" read: ");
                     response.append(messageLink).append("\n");
-                    if (messageContent != null) {
-                        response.append("\n").append(messageContent).append("\n");
-                    }
                 }
             } else {
                 response.append("Your last read message: No read receipt found.\n");
@@ -1857,6 +1865,9 @@ public class MatrixHelloBot {
         }
     }
 
+    // Unused for now - kept for potential future use
+    // This method fetches the actual message content for a given event ID
+    // Currently not used in sendLastMessageAndReadReceipt since we only show links
     private static String getMessageContent(HttpClient client, ObjectMapper mapper, String url, String accessToken, String roomId, String eventId) {
         try {
             // Try to get the message from the sync response first
