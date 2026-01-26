@@ -156,29 +156,6 @@ public class MatrixHelloBot {
                     String roomId = inviteRoomIds.next();
                     System.out.println("Invited to room: " + roomId);
                     
-                    // Check if room is encrypted before joining
-                    boolean isEncrypted = false;
-                    try {
-                        // Try to get encryption state
-                        String stateUrl = url + "/_matrix/client/v3/rooms/" + URLEncoder.encode(roomId, StandardCharsets.UTF_8) + "/state/m.room.encryption/";
-                        HttpRequest stateReq = HttpRequest.newBuilder()
-                                .uri(URI.create(stateUrl))
-                                .header("Authorization", "Bearer " + config.accessToken)
-                                .GET()
-                                .build();
-                        HttpResponse<String> stateResp = client.send(stateReq, HttpResponse.BodyHandlers.ofString());
-                        System.out.println("Encryption check for " + roomId + ": status=" + stateResp.statusCode() + ", body=" + stateResp.body());
-                        if (stateResp.statusCode() == 200) {
-                            JsonNode encryptionState = mapper.readTree(stateResp.body());
-                            if (encryptionState.has("algorithm")) {
-                                isEncrypted = true;
-                                System.out.println("Room " + roomId + " is encrypted with algorithm: " + encryptionState.path("algorithm").asText());
-                            }
-                        }
-                    } catch (Exception e) {
-                        System.out.println("Error checking room encryption: " + e.getMessage());
-                    }
-                    
                     // Auto-join the room
                     String joinUrl = url + "/_matrix/client/v3/rooms/" + URLEncoder.encode(roomId, StandardCharsets.UTF_8) + "/join";
                     Map<String, Object> joinPayload = new java.util.HashMap<>();
