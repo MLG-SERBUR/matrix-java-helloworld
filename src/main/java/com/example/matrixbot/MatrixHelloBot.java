@@ -149,15 +149,37 @@ public class MatrixHelloBot {
                 JsonNode root = mapper.readTree(syncResp.body());
                 since = root.path("next_batch").asText(since);
 
+                // Handle invited rooms (auto-join DMs)
+                JsonNode inviteRooms = root.path("rooms").path("invite");
+                Iterator<String> inviteRoomIds = inviteRooms.fieldNames();
+                while (inviteRoomIds.hasNext()) {
+                    String roomId = inviteRoomIds.next();
+                    System.out.println("Invited to room: " + roomId);
+                    
+                    // Auto-join the room
+                    String joinUrl = url + "/_matrix/client/v3/rooms/" + URLEncoder.encode(roomId, StandardCharsets.UTF_8) + "/join";
+                    Map<String, Object> joinPayload = new java.util.HashMap<>();
+                    String jsonPayload = mapper.writeValueAsString(joinPayload);
+                    
+                    HttpRequest joinReq = HttpRequest.newBuilder()
+                            .uri(URI.create(joinUrl))
+                            .header("Authorization", "Bearer " + config.accessToken)
+                            .header("Content-Type", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofString(jsonPayload))
+                            .build();
+                    
+                    HttpResponse<String> joinResp = client.send(joinReq, HttpResponse.BodyHandlers.ofString());
+                    if (joinResp.statusCode() == 200) {
+                        System.out.println("Successfully joined room: " + roomId);
+                    } else {
+                        System.out.println("Failed to join room " + roomId + ": " + joinResp.statusCode() + " - " + joinResp.body());
+                    }
+                }
+
                 JsonNode rooms = root.path("rooms").path("join");
                 Iterator<String> roomIds = rooms.fieldNames();
                 while (roomIds.hasNext()) {
                     String roomId = roomIds.next();
-                    
-                    // Only process messages from the command room
-                    if (!roomId.equals(config.commandRoomId)) {
-                        continue;
-                    }
                     
                     JsonNode roomNode = rooms.path(roomId);
                     JsonNode timelineNode = roomNode.path("timeline");
@@ -171,11 +193,15 @@ public class MatrixHelloBot {
                             if (body == null) continue;
                             String trimmed = body.trim();
                             
-                            // Process commands only from command room
+                            // Determine response room: use the room where the command was sent
+                            // This allows DMs to be responded to in DMs
+                            String responseRoomId = roomId;
+                            
+                            // Process commands from any room (including DMs)
                             if ("!testcommand".equals(trimmed)) {
                                 if (userId != null && userId.equals(sender)) continue;
                                 System.out.println("Received !testcommand in " + roomId + " from " + sender);
-                                sendText(client, mapper, url, config.accessToken, roomId, "Hello, world!");
+                                sendText(client, mapper, url, config.accessToken, responseRoomId, "Hello, world!");
                             } else if (trimmed.matches("!export\\d+h")) {
                                 if (userId != null && userId.equals(sender)) continue;
                                 int hours = Integer.parseInt(trimmed.replaceAll("\\D+", ""));
@@ -183,8 +209,8 @@ public class MatrixHelloBot {
                                 // run export in a new thread so we don't block the sync loop
                                 final String finalPrevBatch = prevBatch;
                                 final Config finalConfig = config;
-                                final String finalRoomId = roomId; // Command room for responses
-                                new Thread(() -> exportRoomHistory(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, hours, finalPrevBatch)).start();
+                                final String finalResponseRoomId = responseRoomId; // Use response room for replies
+                                new Thread(() -> exportRoomHistory(client, mapper, url, finalConfig.accessToken, finalResponseRoomId, finalConfig.exportRoomId, hours, finalPrevBatch)).start();
                             } else if (trimmed.matches("!arliai\\s+[A-Z]{3}\\s+\\d+h(?:\\s+(.*))?")) {
                                 if (userId != null && userId.equals(sender)) continue;
 
@@ -199,9 +225,9 @@ public class MatrixHelloBot {
                                     final String finalQuestion = question;
                                     final String finalPrevBatch = prevBatch; // Make prevBatch final for lambda
                                     final Config finalConfig = config;
-                                    final String finalRoomId = roomId; // Command room for responses
+                                    final String finalResponseRoomId = responseRoomId; // Use response room for replies
                                     final String finalTimezoneAbbr = timezoneAbbr;
-                                    new Thread(() -> queryArliAIWithChatLogs(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, finalHours, finalPrevBatch, finalQuestion, finalConfig, -1, finalTimezoneAbbr)).start();
+                                    new Thread(() -> queryArliAIWithChatLogs(client, mapper, url, finalConfig.accessToken, finalResponseRoomId, finalConfig.exportRoomId, finalHours, finalPrevBatch, finalQuestion, finalConfig, -1, finalTimezoneAbbr)).start();
                                 }
                             } else if (trimmed.matches("!arliai-ts\\s+\\d{4}-\\d{2}-\\d{2}-\\d{2}-\\d{2}\\s+[A-Z]{3}\\s+\\d+h(?:\\s+(.*))?")) {
                                 if (userId != null && userId.equals(sender)) continue;
@@ -228,9 +254,9 @@ public class MatrixHelloBot {
                                     final String finalQuestion = question;
                                     final String finalPrevBatch = prevBatch;
                                     final Config finalConfig = config;
-                                    final String finalRoomId = roomId;
+                                    final String finalResponseRoomId = responseRoomId;
                                     final String finalTimezoneAbbr = timezoneAbbr;
-                                    new Thread(() -> queryArliAIWithChatLogs(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, finalDurationHours, finalPrevBatch, finalQuestion, finalConfig, finalStartTimestamp, finalTimezoneAbbr)).start();
+                                    new Thread(() -> queryArliAIWithChatLogs(client, mapper, url, finalConfig.accessToken, finalResponseRoomId, finalConfig.exportRoomId, finalDurationHours, finalPrevBatch, finalQuestion, finalConfig, finalStartTimestamp, finalTimezoneAbbr)).start();
                                 }
                             } else if (trimmed.matches("!cerebras\\s+[A-Z]{3}\\s+\\d+h(?:\\s+(.*))?")) {
                                 if (userId != null && userId.equals(sender)) continue;
@@ -246,9 +272,9 @@ public class MatrixHelloBot {
                                     final String finalQuestion = question;
                                     final String finalPrevBatch = prevBatch;
                                     final Config finalConfig = config;
-                                    final String finalRoomId = roomId;
+                                    final String finalResponseRoomId = responseRoomId;
                                     final String finalTimezoneAbbr = timezoneAbbr;
-                                    new Thread(() -> queryCerebrasAIWithChatLogs(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, finalHours, finalPrevBatch, finalQuestion, finalConfig, -1, finalTimezoneAbbr)).start();
+                                    new Thread(() -> queryCerebrasAIWithChatLogs(client, mapper, url, finalConfig.accessToken, finalResponseRoomId, finalConfig.exportRoomId, finalHours, finalPrevBatch, finalQuestion, finalConfig, -1, finalTimezoneAbbr)).start();
                                 }
                             } else if (trimmed.matches("!cerebras-ts\\s+\\d{4}-\\d{2}-\\d{2}-\\d{2}-\\d{2}\\s+[A-Z]{3}\\s+\\d+h(?:\\s+(.*))?")) {
                                 if (userId != null && userId.equals(sender)) continue;
@@ -273,9 +299,9 @@ public class MatrixHelloBot {
                                     final String finalQuestion = question;
                                     final String finalPrevBatch = prevBatch;
                                     final Config finalConfig = config;
-                                    final String finalRoomId = roomId;
+                                    final String finalResponseRoomId = responseRoomId;
                                     final String finalTimezoneAbbr = timezoneAbbr;
-                                    new Thread(() -> queryCerebrasAIWithChatLogs(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, finalDurationHours, finalPrevBatch, finalQuestion, finalConfig, finalStartTimestamp, finalTimezoneAbbr)).start();
+                                    new Thread(() -> queryCerebrasAIWithChatLogs(client, mapper, url, finalConfig.accessToken, finalResponseRoomId, finalConfig.exportRoomId, finalDurationHours, finalPrevBatch, finalQuestion, finalConfig, finalStartTimestamp, finalTimezoneAbbr)).start();
                                 }
                             } else if (trimmed.matches("!semantic\\s+[A-Z]{3}\\s+\\d+h\\s+(.+)")) {
                                 if (userId != null && userId.equals(sender)) continue;
@@ -291,9 +317,9 @@ public class MatrixHelloBot {
                                     final String finalQuery = query;
                                     final String finalPrevBatch = prevBatch;
                                     final Config finalConfig = config;
-                                    final String finalRoomId = roomId;
+                                    final String finalResponseRoomId = responseRoomId;
                                     final String finalTimezoneAbbr = timezoneAbbr;
-                                    new Thread(() -> performSemanticSearch(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, finalHours, finalPrevBatch, finalQuery, finalTimezoneAbbr)).start();
+                                    new Thread(() -> performSemanticSearch(client, mapper, url, finalConfig.accessToken, finalResponseRoomId, finalConfig.exportRoomId, finalHours, finalPrevBatch, finalQuery, finalTimezoneAbbr)).start();
                                 }
                             } else if (trimmed.matches("!grep\\s+[A-Z]{3}\\s+\\d+[dh]\\s+(.+)")) {
                                 if (userId != null && userId.equals(sender)) continue;
@@ -314,9 +340,9 @@ public class MatrixHelloBot {
                                     final String finalPattern = pattern;
                                     final String finalPrevBatch = prevBatch;
                                     final Config finalConfig = config;
-                                    final String finalRoomId = roomId;
+                                    final String finalResponseRoomId = responseRoomId;
                                     final String finalTimezoneAbbr = timezoneAbbr;
-                                    new Thread(() -> performGrep(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, finalHours, finalPrevBatch, finalPattern, finalTimezoneAbbr, sender)).start();
+                                    new Thread(() -> performGrep(client, mapper, url, finalConfig.accessToken, finalResponseRoomId, finalConfig.exportRoomId, finalHours, finalPrevBatch, finalPattern, finalTimezoneAbbr, sender)).start();
                                 }
                             } else if (trimmed.matches("!grep-slow\\s+[A-Z]{3}\\s+\\d+[dh]\\s+(.+)")) {
                                 if (userId != null && userId.equals(sender)) continue;
@@ -337,9 +363,9 @@ public class MatrixHelloBot {
                                     final String finalPattern = pattern;
                                     final String finalPrevBatch = prevBatch;
                                     final Config finalConfig = config;
-                                    final String finalRoomId = roomId;
+                                    final String finalResponseRoomId = responseRoomId;
                                     final String finalTimezoneAbbr = timezoneAbbr;
-                                    new Thread(() -> performGrepSlow(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, finalHours, finalPrevBatch, finalPattern, finalTimezoneAbbr, sender)).start();
+                                    new Thread(() -> performGrepSlow(client, mapper, url, finalConfig.accessToken, finalResponseRoomId, finalConfig.exportRoomId, finalHours, finalPrevBatch, finalPattern, finalTimezoneAbbr, sender)).start();
                                 }
                             } else if (trimmed.matches("!search\\s+[A-Z]{3}\\s+\\d+[dh]\\s+(.+)")) {
                                 if (userId != null && userId.equals(sender)) continue;
@@ -360,9 +386,9 @@ public class MatrixHelloBot {
                                     final String finalQuery = query;
                                     final String finalPrevBatch = prevBatch;
                                     final Config finalConfig = config;
-                                    final String finalRoomId = roomId;
+                                    final String finalResponseRoomId = responseRoomId;
                                     final String finalTimezoneAbbr = timezoneAbbr;
-                                    new Thread(() -> performSearch(client, mapper, url, finalConfig.accessToken, finalRoomId, finalConfig.exportRoomId, finalHours, finalPrevBatch, finalQuery, finalTimezoneAbbr, sender)).start();
+                                    new Thread(() -> performSearch(client, mapper, url, finalConfig.accessToken, finalResponseRoomId, finalConfig.exportRoomId, finalHours, finalPrevBatch, finalQuery, finalTimezoneAbbr, sender)).start();
                                 }
                             } else if ("!abort".equals(trimmed)) {
                                 if (userId != null && userId.equals(sender)) continue;
@@ -372,17 +398,17 @@ public class MatrixHelloBot {
                                 AtomicBoolean abortFlag = runningOperations.get(sender);
                                 if (abortFlag != null) {
                                     abortFlag.set(true);
-                                    sendText(client, mapper, url, config.accessToken, roomId, "Aborting your running search/grep operations...");
+                                    sendText(client, mapper, url, config.accessToken, responseRoomId, "Aborting your running search/grep operations...");
                                 } else {
-                                    sendText(client, mapper, url, config.accessToken, roomId, "No running operations found to abort.");
+                                    sendText(client, mapper, url, config.accessToken, responseRoomId, "No running operations found to abort.");
                                 }
                             } else if ("!last".equals(trimmed)) {
                                 if (userId != null && userId.equals(sender)) continue;
                                 System.out.println("Received last command in " + roomId + " from " + sender);
                                 final String finalSender = sender;
-                                final String finalRoomId = roomId;
+                                final String finalResponseRoomId = responseRoomId;
                                 final Config finalConfig = config;
-                                new Thread(() -> sendLastMessageAndReadReceipt(client, mapper, url, finalConfig.accessToken, finalConfig.exportRoomId, finalSender, finalRoomId)).start();
+                                new Thread(() -> sendLastMessageAndReadReceipt(client, mapper, url, finalConfig.accessToken, finalConfig.exportRoomId, finalSender, finalResponseRoomId)).start();
                             } else if ("!ping".equals(trimmed)) {
                                 if (userId != null && userId.equals(sender)) continue;
                                 System.out.println("Received ping command in " + roomId + " from " + sender);
@@ -393,7 +419,7 @@ public class MatrixHelloBot {
                                 long latencyMs = currentTime - messageTimestamp;
                                 
                                 String response = "Pong! (ping took " + latencyMs + " ms to arrive)";
-                                sendText(client, mapper, url, config.accessToken, roomId, response);
+                                sendText(client, mapper, url, config.accessToken, responseRoomId, response);
                             } else if ("!help".equals(trimmed)) {
                                 if (userId != null && userId.equals(sender)) continue;
                                 System.out.println("Received help command in " + roomId + " from " + sender);
@@ -437,7 +463,7 @@ public class MatrixHelloBot {
                                     "  - Example: `!search PST 24h fluffychat robomwm` finds messages with both terms\n\n" +
                                     "**!abort** - Abort your currently running search/grep operations\n\n" +
                                     "**!help** - Show this help message";
-                                sendMarkdown(client, mapper, url, config.accessToken, roomId, helpText);
+                                sendMarkdown(client, mapper, url, config.accessToken, responseRoomId, helpText);
                             }
                         }
                     }
