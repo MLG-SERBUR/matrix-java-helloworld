@@ -130,6 +130,78 @@ public class MatrixHelloBot {
         System.out.println("Command room: " + config.commandRoomId);
         System.out.println("Export room: " + config.exportRoomId);
 
+        // On startup, check for rooms where the bot should leave (DMs where user already left)
+        try {
+            System.out.println("Checking for abandoned DMs on startup...");
+            String joinedRoomsUrl = url + "/_matrix/client/v3/joined_rooms";
+            HttpRequest joinedReq = HttpRequest.newBuilder()
+                    .uri(URI.create(joinedRoomsUrl))
+                    .header("Authorization", "Bearer " + config.accessToken)
+                    .GET()
+                    .build();
+            HttpResponse<String> joinedResp = client.send(joinedReq, HttpResponse.BodyHandlers.ofString());
+            if (joinedResp.statusCode() == 200) {
+                JsonNode joinedRooms = mapper.readTree(joinedResp.body()).path("joined_rooms");
+                if (joinedRooms.isArray()) {
+                    for (JsonNode roomIdNode : joinedRooms) {
+                        String roomId = roomIdNode.asText();
+                        
+                        // Skip configured rooms
+                        if (roomId.equals(config.commandRoomId) || roomId.equals(config.exportRoomId)) {
+                            continue;
+                        }
+                        
+                        // Check if room is a DM (only 2 members including bot)
+                        try {
+                            // Get room state to check if it's a DM (only 2 members)
+                            // Use /members endpoint to get current member list
+                            String membersUrl = url + "/_matrix/client/v3/rooms/" + URLEncoder.encode(roomId, StandardCharsets.UTF_8) + "/members";
+                            HttpRequest membersReq = HttpRequest.newBuilder()
+                                    .uri(URI.create(membersUrl))
+                                    .header("Authorization", "Bearer " + config.accessToken)
+                                    .GET()
+                                    .build();
+                            HttpResponse<String> membersResp = client.send(membersReq, HttpResponse.BodyHandlers.ofString());
+                            if (membersResp.statusCode() == 200) {
+                                JsonNode members = mapper.readTree(membersResp.body()).path("chunk");
+                                if (members.isArray()) {
+                                    int memberCount = 0;
+                                    for (JsonNode member : members) {
+                                        String membership = member.path("content").path("membership").asText(null);
+                                        if ("join".equals(membership) || "invite".equals(membership)) {
+                                            memberCount++;
+                                        }
+                                    }
+                                    
+                                    // If only 1 member left (the bot itself), leave the room
+                                    if (memberCount <= 1) {
+                                        System.out.println("Startup: Room " + roomId + " has " + memberCount + " member(s), bot is leaving");
+                                        String leaveUrl = url + "/_matrix/client/v3/rooms/" + URLEncoder.encode(roomId, StandardCharsets.UTF_8) + "/leave";
+                                        Map<String, Object> leavePayload = new java.util.HashMap<>();
+                                        String jsonPayload = mapper.writeValueAsString(leavePayload);
+                                        
+                                        HttpRequest leaveReq = HttpRequest.newBuilder()
+                                                .uri(URI.create(leaveUrl))
+                                                .header("Authorization", "Bearer " + config.accessToken)
+                                                .header("Content-Type", "application/json")
+                                                .POST(HttpRequest.BodyPublishers.ofString(jsonPayload))
+                                                .build();
+                                        
+                                        HttpResponse<String> leaveResp = client.send(leaveReq, HttpResponse.BodyHandlers.ofString());
+                                        System.out.println("Bot left room " + roomId + " -> " + leaveResp.statusCode());
+                                    }
+                                }
+                            }
+                        } catch (Exception e) {
+                            System.out.println("Error checking room " + roomId + " on startup: " + e.getMessage());
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("Error checking joined rooms on startup: " + e.getMessage());
+        }
+
         while (true) {
             try {
                 String syncUrl = url + "/_matrix/client/v3/sync?timeout=30000" + (since != null ? "&since=" + URLEncoder.encode(since, StandardCharsets.UTF_8) : "");
@@ -222,6 +294,41 @@ public class MatrixHelloBot {
                         }
                     } else {
                         System.out.println("Failed to join room " + roomId + ": " + joinResp.statusCode() + " - " + joinResp.body());
+                    }
+                }
+
+                // Handle left rooms (user left DM)
+                JsonNode leaveRooms = root.path("rooms").path("leave");
+                Iterator<String> leaveRoomIds = leaveRooms.fieldNames();
+                while (leaveRoomIds.hasNext()) {
+                    String roomId = leaveRoomIds.next();
+                    System.out.println("User left room: " + roomId);
+                    
+                    // For DMs, if the user leaves, the bot should leave too
+                    // We can't reliably check member count after leaving, so just leave
+                    // Skip configured rooms (command room and export room)
+                    if (roomId.equals(config.commandRoomId) || roomId.equals(config.exportRoomId)) {
+                        System.out.println("Skipping leave for configured room: " + roomId);
+                        continue;
+                    }
+                    
+                    try {
+                        System.out.println("Bot is leaving room: " + roomId);
+                        String leaveUrl = url + "/_matrix/client/v3/rooms/" + URLEncoder.encode(roomId, StandardCharsets.UTF_8) + "/leave";
+                        Map<String, Object> leavePayload = new java.util.HashMap<>();
+                        String jsonPayload = mapper.writeValueAsString(leavePayload);
+                        
+                        HttpRequest leaveReq = HttpRequest.newBuilder()
+                                .uri(URI.create(leaveUrl))
+                                .header("Authorization", "Bearer " + config.accessToken)
+                                .header("Content-Type", "application/json")
+                                .POST(HttpRequest.BodyPublishers.ofString(jsonPayload))
+                                .build();
+                        
+                        HttpResponse<String> leaveResp = client.send(leaveReq, HttpResponse.BodyHandlers.ofString());
+                        System.out.println("Bot left room " + roomId + " -> " + leaveResp.statusCode());
+                    } catch (Exception e) {
+                        System.out.println("Error leaving room " + roomId + ": " + e.getMessage());
                     }
                 }
 
