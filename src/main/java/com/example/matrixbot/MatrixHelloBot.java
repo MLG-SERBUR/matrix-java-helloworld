@@ -16,17 +16,6 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * Matrix Bot - Primary use case: show user's last message and read receipt status via !last command.
- * 
- * Architecture:
- * - MatrixHelloBot: Sync loop, !last command, room management
- * - MatrixClient: Matrix protocol HTTP interactions
- * - RoomHistoryManager: Chat history fetching and pagination
- * - LastMessageService: !last command implementation
- * - RoomManagementService: Join/leave/cleanup logic
- * - CommandDispatcher: Routing for other commands (export, search, etc.)
- */
 public class MatrixHelloBot {
     
     public static class Config {
@@ -62,6 +51,9 @@ public class MatrixHelloBot {
         LastMessageService lastMessageService = new LastMessageService(matrixClient, historyManager, client, mapper, url, config.accessToken);
         RoomManagementService roomMgmt = new RoomManagementService(matrixClient, client, mapper, url, config.accessToken);
         CommandDispatcher dispatcher = new CommandDispatcher(matrixClient, historyManager, client, mapper, url, config, runningOperations);
+        
+        // NEW: AutoLastService with explicit HttpClient passed
+        AutoLastService autoLastService = new AutoLastService(matrixClient, lastMessageService, client, mapper, url, config.accessToken);
 
         String userId = matrixClient.getUserId();
 
@@ -127,13 +119,17 @@ public class MatrixHelloBot {
                     roomMgmt.handleUserLeftRoom(roomId, config.commandRoomId, config.exportRoomId);
                 }
 
-                // Process messages in joined rooms
+                // Process rooms
                 JsonNode rooms = root.path("rooms").path("join");
                 Iterator<String> roomIds = rooms.fieldNames();
                 while (roomIds.hasNext()) {
                     String roomId = roomIds.next();
-                    
                     JsonNode roomNode = rooms.path(roomId);
+                    
+                    // NEW: Process Ephemeral Events (Read Receipts)
+                    JsonNode ephemeralEvents = roomNode.path("ephemeral").path("events");
+                    autoLastService.processEphemeralEvents(roomId, ephemeralEvents, config.exportRoomId);
+
                     JsonNode timelineNode = roomNode.path("timeline");
                     String prevBatch = timelineNode.path("prev_batch").asText(null);
                     JsonNode timeline = timelineNode.path("events");
@@ -157,6 +153,11 @@ public class MatrixHelloBot {
                                 final String finalSender = sender;
                                 new Thread(() -> lastMessageService.sendLastMessageAndReadReceipt(config.exportRoomId, finalSender, responseRoomId)).start();
                             }
+                            // NEW: !autolast command
+                            else if ("!autolast".equals(trimmed)) {
+                                System.out.println("Received !autolast command from " + sender);
+                                autoLastService.toggleAutoLast(sender, responseRoomId);
+                            }
                             // !ping for diagnostics
                             else if ("!ping".equals(trimmed)) {
                                 System.out.println("Received !ping command in " + roomId + " from " + sender);
@@ -177,6 +178,7 @@ public class MatrixHelloBot {
                 break;
             } catch (Exception e) {
                 System.out.println("Error during sync loop: " + e.getMessage());
+                e.printStackTrace();
                 try { Thread.sleep(2000); } catch (InterruptedException ex) { Thread.currentThread().interrupt(); break; }
             }
         }
