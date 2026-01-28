@@ -1,4 +1,4 @@
-package com.example.matrixbot;
+package com.robomwm.ai.matrixrobobot;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Architecture:
- * - MatrixHelloBot: Sync loop, !last command, room management
+ * - MatrixRobobot: Sync loop, !last command, room management
  * - MatrixClient: Matrix protocol HTTP interactions
  * - RoomHistoryManager: Chat history fetching and pagination
  * - LastMessageService: !last command implementation
@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * - CommandDispatcher: Routing for other commands (export, search, etc.)
  */
 
-public class MatrixHelloBot {
+public class MatrixRobobot {
     
     public static class Config {
         public String homeserver;

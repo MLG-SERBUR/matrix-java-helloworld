@@ -2,8 +2,8 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
-  <groupId>com.example</groupId>
-  <artifactId>matrix-hello-bot</artifactId>
+  <groupId>com.robomwm.ai.matrixrobobot</groupId>
+  <artifactId>matrix-robobot</artifactId>
   <version>1.0.0</version>
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -38,7 +38,7 @@
           <archive>
             <manifest>
               <addClasspath>false</addClasspath>
-              <mainClass>com.example.matrixbot.MatrixHelloBot</mainClass>
+              <mainClass>com.robomwm.ai.matrixrobobot.MatrixRobobot</mainClass>
             </manifest>
           </archive>
         </configuration>
@@ -57,7 +57,7 @@
               <createDependencyReducedPom>false</createDependencyReducedPom>
               <transformers>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                  <mainClass>com.example.matrixbot.MatrixHelloBot</mainClass>
+                  <mainClass>com.robomwm.ai.matrixrobobot.MatrixRobobot</mainClass>
                 </transformer>
               </transformers>
             </configuration>

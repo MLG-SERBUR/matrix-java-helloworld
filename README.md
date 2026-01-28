@@ -1,6 +1,6 @@
-# Matrix Hello Bot (Java)
+# Matrix-Robobot (Java)
 
-Simple minimal Matrix bot that sends a "Hello, world!" message to a room using the Matrix Client-Server HTTP API.
+Matrix bot that helps you stay in the loop by tracking read receipts, providing conversation summaries, and enabling semantic search through chat history.
 
 ## Architecture
 
@@ -62,7 +62,7 @@ java -jar target/matrix-hello-bot-1.0.0.jar config.json
 
 Or with Maven:
 ```bash
-mvn exec:java -Dexec.mainClass="com.example.matrixbot.MatrixHelloBot" -Dexec.classpathScope=runtime -Dexec.args="config.json"
+mvn exec:java -Dexec.mainClass="com.robomwm.ai.matrixrobobot.MatrixRobobot" -Dexec.classpathScope=runtime -Dexec.args="config.json"
 ```
 
 ## Notes

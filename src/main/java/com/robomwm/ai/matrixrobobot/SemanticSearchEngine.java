@@ -1,4 +1,4 @@
-package com.example.matrixbot;
+package com.robomwm.ai.matrixrobobot;
 
 import java.util.*;
 

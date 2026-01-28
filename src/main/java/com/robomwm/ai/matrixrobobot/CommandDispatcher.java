@@ -1,4 +1,4 @@
-package com.example.matrixbot;
+package com.robomwm.ai.matrixrobobot;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -22,10 +22,10 @@ public class CommandDispatcher {
     private final HttpClient httpClient;
     private final ObjectMapper mapper;
     private final String homeserverUrl;
-    private final MatrixHelloBot.Config config;
+    private final MatrixRobobot.Config config;
     private final Map<String, AtomicBoolean> runningOperations;
 
-    public CommandDispatcher(MatrixClient matrixClient, RoomHistoryManager historyManager, HttpClient httpClient, ObjectMapper mapper, String homeserverUrl, MatrixHelloBot.Config config, Map<String, AtomicBoolean> runningOperations) {
+    public CommandDispatcher(MatrixClient matrixClient, RoomHistoryManager historyManager, HttpClient httpClient, ObjectMapper mapper, String homeserverUrl, MatrixRobobot.Config config, Map<String, AtomicBoolean> runningOperations) {
         this.matrixClient = matrixClient;
         this.historyManager = historyManager;
         this.httpClient = httpClient;
