@@ -110,8 +110,10 @@ public class AutoLastService {
         String dmRoomId = findDirectMessageRoom(userId);
         if (dmRoomId != null) {
             System.out.println("Triggering Auto-Last for " + userId);
+            // Get the cached previous read event ID before updating it
+            String previousReadEventId = lastReadEventId.get(userId);
             // We run this in a separate thread to not block the sync loop
-            new Thread(() -> lastMessageService.sendLastMessageAndReadReceipt(exportRoomId, userId, dmRoomId)).start();
+            new Thread(() -> lastMessageService.sendLastMessageAndReadReceipt(exportRoomId, userId, dmRoomId, previousReadEventId)).start();
         } else {
             System.out.println("Could not find DM room for auto-last user: " + userId);
         }

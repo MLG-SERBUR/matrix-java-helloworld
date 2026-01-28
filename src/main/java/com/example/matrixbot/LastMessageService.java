@@ -34,12 +34,26 @@ public class LastMessageService {
     }
 
     /**
-     * Execute the !last command
+     * Execute the !last command (convenience overload for backward compatibility)
      */
     public void sendLastMessageAndReadReceipt(String exportRoomId, String sender, String responseRoomId) {
+        sendLastMessageAndReadReceipt(exportRoomId, sender, responseRoomId, null);
+    }
+
+    /**
+     * Execute the !last command
+     * @param exportRoomId The room to get info from
+     * @param sender The user to get info for
+     * @param responseRoomId The room to send the response to
+     * @param cachedPreviousReadEventId Optional cached previous read event ID (used by auto-last feature)
+     */
+    public void sendLastMessageAndReadReceipt(String exportRoomId, String sender, String responseRoomId, String cachedPreviousReadEventId) {
         try {
             String lastMessageEventId = historyManager.getLastMessageFromSender(exportRoomId, sender);
-            String lastReadEventId = getReadReceipt(exportRoomId, sender);
+            // If we have a cached previous read event ID, use that instead of fetching current
+            String lastReadEventId = cachedPreviousReadEventId != null 
+                ? cachedPreviousReadEventId 
+                : getReadReceipt(exportRoomId, sender);
 
             StringBuilder response = new StringBuilder();
 
