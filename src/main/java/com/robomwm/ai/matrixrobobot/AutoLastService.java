@@ -90,20 +90,20 @@ public class AutoLastService {
                 long now = System.currentTimeMillis();
                 long lastTrigger = lastTriggerTime.getOrDefault(userId, 0L);
 
-                // 2. Check debounce (1 minute) - "last read was more than a minute ago"
-                // We use the trigger time to ensure we don't spam if they read 5 messages in a row.
-                if (now - lastTrigger < 60000) {
+                // 2. Check debounce (30 minutes) - "last read was more than half an hour ago"
+                // We use the trigger time to ensure we don't spam if they read messages in a row.
+                if (now - lastTrigger < 1800000) {
                     // Update the last known read event, but don't trigger
                     lastReadEventId.put(userId, eventId);
                     continue;
                 }
 
-                // 3. Check for at least 2 unread messages
+                // 3. Check for at least 30 unread messages
                 String previousEventId = lastReadEventId.get(userId);
                 
                 // If we have a previous read state, check the gap
                 if (previousEventId != null && !previousEventId.equals(eventId)) {
-                    if (hasAtLeastTwoMessages(roomId, previousEventId, eventId)) {
+                    if (hasAtLeast30Messages(roomId, previousEventId, eventId)) {
                         triggerLastMessage(roomId, userId);
                         lastTriggerTime.put(userId, now);
                     }
@@ -130,12 +130,12 @@ public class AutoLastService {
     }
 
     /**
-     * Checks if there are >= 2 messages between fromEventId and toEventId (exclusive of from, inclusive of to).
+     * Checks if there are >= 30 messages between fromEventId and toEventId (exclusive of from, inclusive of to).
      */
-    private boolean hasAtLeastTwoMessages(String roomId, String previousReadId, String currentReadId) {
+    private boolean hasAtLeast30Messages(String roomId, String previousReadId, String currentReadId) {
         try {
             // Fetch recent messages
-            String url = homeserver + "/_matrix/client/v3/rooms/" + roomId + "/messages?dir=b&limit=20";
+            String url = homeserver + "/_matrix/client/v3/rooms/" + roomId + "/messages?dir=b&limit=100";
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("Authorization", "Bearer " + accessToken)
@@ -172,7 +172,7 @@ public class AutoLastService {
                 }
             }
             
-            return messagesFound >= 2;
+            return messagesFound >= 30;
 
         } catch (Exception e) {
             System.err.println("Error checking message gap: " + e.getMessage());
